@@ -1,0 +1,107 @@
+{
+  "$schema": "interface.schema.json",
+  "jsonrpc": "2.0",
+  "info": {
+    "version": "1.0.0",
+    "title": "Netflix API",
+    "class": "Netflix",
+    "format": "uncompliant-extended",
+    "description": "Netflix JSON-RPC interface"
+  },
+  "common": {
+    "$ref": "common.json"
+  },
+  "include": {
+    "statecontrol": {
+      "$ref": "StateControl.json#"
+    }
+  },
+  "properties": {
+    "esn": {
+      "summary": "ESN value",
+      "deprecated": true,
+      "readonly": true,
+      "params": {
+        "type": "string",
+        "example": "DADDAUFV2=00000000000000000000000000000001"
+      },
+      "errors": [
+        {
+          "description": "Netflix is unavailable",
+          "$ref": "#/common/errors/unavailable"
+        }
+      ]
+    },
+    "visibility": {
+      "summary": "Current Netflix visibility",
+      "deprecated": true,
+      "writeonly":true,
+      "events": [
+        "visibilitychange"
+      ],
+      "params": {
+        "type": "string",
+        "enum": [
+          "visible",
+          "hidden"
+        ]
+      }
+    }
+  },
+  "methods": {
+    "factoryreset": {
+      "summary": "Performs a reset to factory defaults",
+      "deprecated": true,
+      "result": {
+        "$ref": "#/common/results/void"
+      },
+      "errors": [
+        {
+          "description": "Netflix is unavailable",
+          "$ref": "#/common/errors/unavailable"
+        }
+      ]
+    },
+    "systemcommand": {
+      "summary": "Sends a system command to Netflix",
+      "params": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "description": "Command to send to Netflix",
+            "type": "string",
+            "example": "exit"
+          }
+        }
+      },
+      "result": {
+        "$ref": "#/common/results/void"
+      },
+      "errors": [
+        {
+          "description": "Netflix is unavailable",
+          "$ref": "#/common/errors/unavailable"
+        },
+        {
+          "description": "Unknown command",
+          "$ref": "#/common/errors/unknownkey"
+        }
+      ]
+    }
+  },
+  "events": {
+    "playbackchange": {
+      "summary": "Signals playback status change",
+      "params": {
+        "type": "object",
+        "properties": {
+          "playing": {
+            "description": "Determines if the Netflix is in playing mode (true) or not playing (false)",
+            "type": "boolean",
+            "example": true
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,6 @@
+libThunderCompositor.so
+Compositor.json
+lib/*/Client/compositorclientConfigVersion.cmake
+lib/*/Client/libcompositorclient.so
+lib/*/Compositor/libcompositorplugin.so
+lib/RPI/Test/RPICompositorTest

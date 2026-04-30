@@ -1,0 +1,171 @@
+Display Application binary and its dependencies with size. Depends on lddtree.
+    Install pax-utils (apt-get install pax-utils for Debian based distros)
+
+    Usage: binalizer [options]
+
+    e.g,
+
+   ./binalizer -R /home/sramani/Work/buildroot/BR_Webkit_2_28/output/target -b /usr/lib/thunder/plugins/libThunderAmazonPrime.so
+
+    Options:
+      -R <root>         Use this ROOT filesystem tree
+      -b <bin file>     Application bin file - with Relative path from root filesystem
+      -i <input file>   New line separated list of applications with relative path from Root filesystem
+      -l <Libs dir>     Analyse libs in this directory
+      -h                Show this help output
+
+    Running binalizer without arguments would assume ROOT filesystem as current directory and use the default app bin list
+
+Example usage:
+
+1. To get size details of an application
+
+  ./binalizer -R /home/sramani/Work/buildroot/BR_Webkit_2_28/output/target -b /usr/bin/Thunder
+    ------------------------------------------------------------------------
+        Bin File                        Size in Bytes
+    ------------------------------------------------------------------------
+    Thunder                              1426128
+        libThunderPlugins.so.1           1320820
+        libThunderWebSocket.so.1         393968
+            libz.so.1                         62980
+        libThunderCOM.so.1               1062108
+        libThunderCryptalgo.so.1         64216
+            libssl.so.1.1                     338096
+                libdl.so.2                    9604
+                    ld-linux-armhf.so.3       123320
+                libatomic.so.1                21768
+                libpthread.so.0               110052
+            libcrypto.so.1.1                  1693952
+        libThunderTracing.so.1           200712
+        libThunderCore.so.1              647320
+            librt.so.1                        22336
+        libstdc++.so.6                        1265972
+        libm.so.6                             341344
+        libgcc_s.so.1                         112152
+        libc.so.6                             918244
+    ------------------------------------------------------------------------
+      Total Size                              10135092
+    ------------------------------------------------------------------------
+  
+2. To get size details of an application
+
+   ./binalizer -R /home/sramani/Work/buildroot/BR_Webkit_2_28/output/target -b /usr/lib/thunder/plugins/libThunderAmazonPrime.so
+
+    ------------------------------------------------------------------------
+        Bin File                        Size in Bytes
+    ------------------------------------------------------------------------
+    libThunderAmazonPrime.so             655676
+        libThunderPlugins.so.1           1320820
+        libThunderDefinitions.so.1       58236
+        libignition.so                        16511752
+        libThunderTracing.so.1           200712
+        libThunderCore.so.1              647320
+        libstdc++.so.6                        1265972
+        libm.so.6                             341344
+        libgcc_s.so.1                         112152
+        libc.so.6                             918244
+    ------------------------------------------------------------------------
+      Total Size                              22032228
+    ------------------------------------------------------------------------
+ 
+3. To get sizes of all libraries and its dependents in a particular folder
+
+  ./binalizer -R /home/sramani/Work/buildroot/BR_Webkit_2_28/output/target -l /usr/lib/thunder/plugins/
+    ------------------------------------------------------------------------
+        Bin File                        Size in Bytes
+    ------------------------------------------------------------------------
+    libThunderAmazonPrime.so             655676
+        libThunderPlugins.so.1           1320820
+        libThunderDefinitions.so.1       58236
+        libignition.so                        16511752
+        libThunderTracing.so.1           200712
+        libThunderCore.so.1              647320
+        libstdc++.so.6                        1265972
+        libm.so.6                             341344
+        libgcc_s.so.1                         112152
+        libc.so.6                             918244
+    ------------------------------------------------------------------------
+      Total Size                              22032228
+    ------------------------------------------------------------------------
+    ------------------------------------------------------------------------
+        Bin File                        Size in Bytes
+    ------------------------------------------------------------------------
+    libThunderCompositor.so              772300
+        libThunderPlugins.so.1           1320820
+        libThunderDefinitions.so.1       58236
+        libThunderTracing.so.1           200712
+        libThunderCore.so.1              647320
+        libstdc++.so.6                        1265972
+        libm.so.6                             341344
+        libgcc_s.so.1                         112152
+        libc.so.6                             918244
+    ------------------------------------------------------------------------
+      Total Size                              5637100
+    ------------------------------------------------------------------------
+    
+    Output Truncated
+
+4. To get size details of a list of apps
+
+    Create a input file with new line separted list of files
+    
+     #cat input.txt 
+     /usr/bin/Thunder
+     /usr/bin/ThunderPlugin
+ 
+    Pass it to binalizer
+    ./binalizer -R /home/sramani/Work/buildroot/BR_Webkit_2_28/output/target -i input.txt
+
+    ------------------------------------------------------------------------
+	Bin File                        Size in Bytes
+    ------------------------------------------------------------------------
+    Thunder                              1426128
+        libThunderPlugins.so.1           1320820
+        libThunderWebSocket.so.1         393968
+            libz.so.1                         62980
+        libThunderCOM.so.1               1062108
+        libThunderCryptalgo.so.1         64216
+            libssl.so.1.1                     338096
+                libdl.so.2                    9604
+                    ld-linux-armhf.so.3       123320
+                libatomic.so.1                21768
+                libpthread.so.0               110052
+            libcrypto.so.1.1                  1693952
+        libThunderTracing.so.1           200712
+        libThunderCore.so.1              647320
+            librt.so.1                        22336
+        libstdc++.so.6                        1265972
+        libm.so.6                             341344
+        libgcc_s.so.1                         112152
+        libc.so.6                             918244
+    ------------------------------------------------------------------------
+      Total Size                              10135092
+    ------------------------------------------------------------------------
+    ------------------------------------------------------------------------
+        Bin File                        Size in Bytes
+    ------------------------------------------------------------------------
+    ThunderPlugin                                387568
+        libThunderPlugins.so.1           1320820
+        libThunderWebSocket.so.1         393968
+            libz.so.1                         62980
+        libThunderCOM.so.1               1062108
+        libThunderCryptalgo.so.1         64216
+            libssl.so.1.1                     338096
+                libdl.so.2                    9604
+                    ld-linux-armhf.so.3       123320
+                libatomic.so.1                21768
+                libpthread.so.0               110052
+            libcrypto.so.1.1                  1693952
+        libThunderTracing.so.1           200712
+        libThunderCore.so.1              647320
+            librt.so.1                        22336
+        libstdc++.so.6                        1265972
+        libm.so.6                             341344
+        libgcc_s.so.1                         112152
+        libc.so.6                             918244
+    ------------------------------------------------------------------------
+      Total Size                              9096532
+    ------------------------------------------------------------------------
+ 
+    
+ 

@@ -1,0 +1,26 @@
+# Ignore Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Ignore backup files
+*.backup
+*.bak
+*~
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore IDE files
+.idea/
+*.swp
+*.swo
+
+# Ignore log files
+*.log
+
+# Ignore test artifacts
+test_*/
+.pytest_cache/

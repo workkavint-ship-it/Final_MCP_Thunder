@@ -1,0 +1,578 @@
+/*
+ * If not stated otherwise in this file or this component's LICENSE file the
+ * following copyright and licenses apply:
+ *
+ * Copyright 2020 Metrological
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#ifndef __COM_IUNKNOWN_H
+#define __COM_IUNKNOWN_H
+
+#include "Module.h"
+#include "Ids.h"
+#include "Administrator.h"
+#include "Messages.h"
+
+namespace Thunder {
+
+namespace RPC {
+    class Communicator;
+}
+
+namespace ProxyStub {
+    // -------------------------------------------------------------------------------------------
+    // STUB
+    // -------------------------------------------------------------------------------------------
+
+    typedef void (*MethodHandler)(Core::ProxyType<Core::IPCChannel>& channel, Core::ProxyType<RPC::InvokeMessage>& message);
+
+    struct EXTERNAL IProxyStubInterfaceConversion {
+
+        virtual ~IProxyStubInterfaceConversion() = default;  
+
+        virtual Core::IUnknown* Convert(void* incomingData) const = 0;
+    };
+
+    class EXTERNAL UnknownStub : public IProxyStubInterfaceConversion {
+    public:
+        UnknownStub(UnknownStub&&) = delete;
+        UnknownStub(const UnknownStub&) = delete;
+        UnknownStub& operator=(UnknownStub&&) = delete;
+        UnknownStub& operator=(const UnknownStub&) = delete;
+
+        UnknownStub() = default;
+        virtual ~UnknownStub() = default;
+
+    public:
+        enum class StubMethodsIndexType : uint8_t {
+            ADRREF          = 0,
+            RELEASE         = 1,
+            QUERYINTERFACE  = 2 // when this list is extended and this is no longer the last entry, update the Length() method as well
+        };
+
+    public:
+        inline uint16_t Length() const {
+            return (static_cast<uint16_t>(StubMethodsIndexType::QUERYINTERFACE) + 1);
+        }
+        virtual uint32_t InterfaceId() const {
+            return (Core::IUnknown::ID);
+        }
+        virtual void Handle(const uint16_t index, Core::ProxyType<Core::IPCChannel>& channel, Core::ProxyType<RPC::InvokeMessage>& message);
+
+        Core::IUnknown* Convert(void* incomingData) const override
+        {
+            return (reinterpret_cast<Core::IUnknown*>(incomingData));
+        }
+
+    private:
+        friend class Thunder::RPC::Administrator;
+
+        Core::IUnknown* ExtractInstance(Core::ProxyType<Core::IPCChannel>& channel, const Core::ProxyType<RPC::InvokeMessage>& message, const bool log) const;
+    };
+
+    template <typename INTERFACE, MethodHandler METHODS[]>
+    class UnknownStubType : public UnknownStub {
+    public:
+        typedef INTERFACE* CLASS_INTERFACE;
+
+    public:
+        UnknownStubType(UnknownStubType<INTERFACE, METHODS>&&) = delete;
+        UnknownStubType(const UnknownStubType<INTERFACE, METHODS>&) = delete;
+        UnknownStubType<INTERFACE, METHODS>& operator=(UnknownStubType<INTERFACE, METHODS>&&) = delete;
+        UnknownStubType<INTERFACE, METHODS>& operator=(const UnknownStubType<INTERFACE, METHODS>&) = delete;
+
+        UnknownStubType()
+        {
+            _myHandlerCount = 0;
+
+            while (METHODS[_myHandlerCount] != nullptr) {
+                _myHandlerCount++;
+            }
+        }
+        ~UnknownStubType() override = default;
+
+    public:
+        inline uint16_t Length() const
+        {
+            return (_myHandlerCount + UnknownStub::Length());
+        }
+        Core::IUnknown* Convert(void* incomingData) const override
+        {
+            return (reinterpret_cast<INTERFACE*>(incomingData));
+        }
+    	uint32_t InterfaceId() const override
+        {
+            return (INTERFACE::ID);
+        }
+        void Handle(const uint16_t index, Core::ProxyType<Core::IPCChannel>& channel, Core::ProxyType<RPC::InvokeMessage>& message) override
+        {
+            uint16_t baseNumber(UnknownStub::Length());
+
+            if (index < baseNumber) {
+                UnknownStub::Handle(index, channel, message);
+            } else if ((index - baseNumber) < _myHandlerCount) {
+                MethodHandler handler(METHODS[index - baseNumber]);
+
+                ASSERT(handler != nullptr);
+
+                handler(channel, message);
+            } else {
+                // if we get here, the message was already checked for validness, so just log the error with the interface id
+                SYSLOG(Logging::Error, (_T("COMRPC received Invoke message with invalid method index , interface ID [%u]"), message->Parameters().InterfaceId()));
+                TRACE_L1("Warning: This COM-RPC failure will not propagate!");
+            }
+        }
+
+    private:
+        uint16_t _myHandlerCount;
+    };
+
+    // -------------------------------------------------------------------------------------------
+    // Proxy/Stub generation requirements:
+    // 1) Interfaces, used as retrieved in the stub code are called inbound. These proxies hold no reference on account of
+    //    the callee. The initial AddRef on this proxy is an AddRef that can be cached.
+    // 2) Interfaces, returned in the proxy code are called outbound. Outbound proxies are referenced by definition, and thus
+    //    should be released.
+    //
+    // Characteristics of proxies:
+    // Inbound proxies can cache a pending AddRef if required.
+    // Inbound and Outbound do require a remote Release on a transaition from 1 -> 0 AddRef.
+    // -------------------------------------------------------------------------------------------
+    class EXTERNAL UnknownProxy {
+    private:
+        enum mode : uint8_t {
+            CACHING_ADDREF   = 0x01,
+            CACHING_RELEASE  = 0x02
+        };
+
+    public:
+        UnknownProxy() = delete;
+        UnknownProxy(UnknownProxy&&) = delete;
+        UnknownProxy(const UnknownProxy&) = delete;
+        UnknownProxy& operator=(UnknownProxy&&) = delete;
+        UnknownProxy& operator=(const UnknownProxy&) = delete;
+
+        UnknownProxy(const Core::ProxyType<Core::IPCChannel>& channel, const Core::instance_id& implementation, const uint32_t interfaceId, const bool outbound, Core::IUnknown& parent, const char* name)
+            : _adminLock()
+            , _refCount(1)
+            , _mode(outbound ? 0 : CACHING_ADDREF)
+            , _interfaceId(interfaceId)
+            , _implementation(implementation)
+            , _parent(parent)
+            , _channel(channel)
+            , _remoteReferences(1)
+            , _name(name)
+        {
+        }
+        virtual ~UnknownProxy() = default;
+
+    public:
+        uint32_t ReferenceCount() const {
+            // Subtract 1, as that is for the holding in the administration system here of the created Proxies
+            return(_refCount - 1);
+        }
+        // -------------------------------------------------------------------------------------------------------------------------------
+        // Proxy/Stub (both) environment calls
+        // -------------------------------------------------------------------------------------------------------------------------------
+        void* Acquire(const bool outbound, const uint32_t id) {
+
+            void* result = nullptr;
+
+            _adminLock.Lock();
+
+            if (_refCount > 1) {
+                if (outbound == false) {
+                    _mode |= CACHING_RELEASE;
+                }
+                else {
+                    // This is an additional call to an interface for which we already have a Proxy issued.
+                    // This is triggerd by the other side, offering us an interface. So once this proxy goes
+                    // out of scope, we also need to "release" the AddRef associated with this on the other
+                    // side..
+                    _remoteReferences++;
+                }
+
+                // This will increment the refcount of this PS, on behalf of the user.
+                result = _parent.QueryInterface(id);
+            }
+            _adminLock.Unlock();
+
+            return(result);
+        }
+        uint32_t AddRef() const {
+            _adminLock.Lock();
+            _refCount++;
+            _adminLock.Unlock();
+            return (Core::ERROR_NONE);
+        }
+        uint32_t Release() const {
+            uint32_t result = Core::ERROR_NONE;
+
+            _adminLock.Lock();
+            ASSERT(_refCount > 0);
+            _refCount--;
+ 
+            if (_refCount > 1 ) {  // note this proxy is also held in the administrator list for non happy day scenario's so we should already release with refcount one, the UnregisterProxy will remove it from the list
+                _adminLock.Unlock();
+                if (_channel.IsValid() == false) {
+                    result = Core::ERROR_CONNECTION_CLOSED;
+                }
+            } 
+            else {
+                ASSERT (_refCount == 1);
+
+                uint32_t channelId = 0;
+                if (_channel.IsValid() == true) {
+                    if ((_mode & (CACHING_RELEASE|CACHING_ADDREF)) == 0) {
+
+                        // We have reached "0", signal the other side..
+                        Core::ProxyType<RPC::InvokeMessage> message(RPC::Administrator::Instance().Message());
+
+                        message->Parameters().Set(_implementation, _interfaceId, static_cast<uint8_t>(UnknownStub::StubMethodsIndexType::RELEASE));
+
+                        // Pass on the number of reference we need to drop, this is indicated by the amount of times this proxy had to be created
+                        message->Parameters().Writer().Number<uint32_t>(_remoteReferences);
+
+                        // Just try the destruction for few Seconds...
+                        result = _channel->Invoke(message, RPC::CommunicationTimeOut);
+
+                        if (result != Core::ERROR_NONE) {
+                            if (result == Core::ERROR_TIMEDOUT) {
+                                Shutdown();
+                            }
+                            SYSLOG(Logging::Error, (_T("Could not remote release the Proxy for Interface [0x%X]"), message->Parameters().InterfaceId()));
+                        }
+                        else {
+                            // Pass the remote release return value through
+                            RPC::Data::Frame::Reader reader(message->Response().Reader());
+                            if ((RPC::Administrator::Instance().CoherentProxyStubs() == true) && (reader.Length() < (Core::RealSize<uint32_t>()))) {
+                                SYSLOG(Logging::Error, (_T("Incoherent Release invoke message received for interface [0x%X]"), message->Parameters().InterfaceId()));
+                            } else {
+                                reader.Number<uint32_t>();
+                            }
+                        }
+                    }
+
+                    // We cleared it properly. Prevent the proxy from ending up in the Dangling list.
+                    channelId = _channel->Id();
+                    _channel.Release();
+                }
+
+                _adminLock.Unlock();
+
+                // Remove our selves from the Administration, we are done..
+                VARIABLE_IS_NOT_USED bool removed = RPC::Administrator::Instance().UnregisterUnknownProxy(*this, channelId);
+
+                ASSERT ((removed == true) || (_channel.IsValid() == false));
+                result = Core::ERROR_DESTRUCTION_SUCCEEDED;
+            }
+
+            return (result);
+        }
+        inline void* RemoteInterface(const uint32_t id, const bool asIUnknown) const
+        {
+            void* result = nullptr;
+            Core::ProxyType<RPC::InvokeMessage> message(RPC::Administrator::Instance().Message());
+            RPC::Data::Frame::Writer parameters(message->Parameters().Writer());
+
+            message->Parameters().Set(_implementation, _interfaceId, static_cast<uint8_t>(UnknownStub::StubMethodsIndexType::QUERYINTERFACE));
+            parameters.Number<uint32_t>(id);
+
+            _adminLock.Lock();
+
+            if ((_channel.IsValid() == false) || (_channel->Invoke(message, RPC::CommunicationTimeOut) != Core::ERROR_NONE)) {
+                _adminLock.Unlock();
+            }
+            else {
+                RPC::Data::Frame::Reader response(message->Response().Reader());
+
+                if ((RPC::Administrator::Instance().CoherentProxyStubs() == false) || (response.Length() >= (Core::RealSize<Core::instance_id>()))) {
+                    Core::instance_id impl = response.Number<Core::instance_id>();
+                    _adminLock.Unlock();
+                    // From what is returned, we need to create a proxy
+                    ProxyStub::UnknownProxy* iuProxy = RPC::Administrator::Instance().ProxyInstance(_channel, impl, true, id, result);
+                    ASSERT((iuProxy == nullptr && result == nullptr) || (iuProxy != nullptr && result != nullptr));
+                    if ((asIUnknown == true) && (iuProxy != nullptr)) {
+                        result = iuProxy->Parent();
+                    }
+                } else {
+                    _adminLock.Unlock();
+                    SYSLOG(Logging::Error, (_T("COMRPC Coherency check failed, QueryInterface message incomplete, interface ID [%u]"), message->Parameters().InterfaceId()));
+                    TRACE_L1("Warning: This COM-RPC failure will not propagate!");
+                }
+            }
+            return (result);
+        }
+        inline Core::IUnknown* Parent()
+        {
+            return (&_parent);
+        }
+        void* Interface(const Core::instance_id& implementation, const uint32_t id) const
+        {
+            void* result = nullptr;
+            RPC::Administrator::Instance().ProxyInstance(_channel, implementation, true, id, result);
+            return (result);
+        }
+        inline uint32_t InterfaceId() const
+        {
+            return (_interfaceId);
+        }
+        inline const Core::instance_id& Implementation() const
+        {
+            return (_implementation);
+        }
+        inline uint32_t ChannelId() const
+        {
+            Core::SafeSyncType<Core::CriticalSection> lock(_adminLock);
+
+            return (_channel.IsValid() ? _channel->Id() : ~0);
+        }
+        // Required by proxystubs!
+        const Core::ProxyType<Core::IPCChannel>& Channel() const {
+            return (_channel);
+        }
+
+        // -------------------------------------------------------------------------------------------------------------------------------
+        // Proxy environment calls
+        // -------------------------------------------------------------------------------------------------------------------------------
+        inline Core::ProxyType<RPC::InvokeMessage> Message(const uint8_t methodId) const
+        {
+            Core::ProxyType<RPC::InvokeMessage> message(RPC::Administrator::Instance().Message());
+
+            message->Parameters().Set(_implementation, _interfaceId, methodId + 3);
+
+            return (message);
+        }
+
+        uint32_t Invoke(Core::ProxyType<RPC::InvokeMessage>& message, const uint32_t waitTime = RPC::CommunicationTimeOut) const;
+
+        inline void Complete(RPC::Data::Setup& response)
+        {
+            uint32_t result = Release();
+
+            _adminLock.Lock();
+
+            if ((_mode & CACHING_ADDREF) != 0) {
+                _mode ^= CACHING_ADDREF;
+
+                if (_refCount > 1) {
+                    response.Action(RPC::Data::Output::mode::CACHED_ADDREF);
+                }
+            }
+            else if ((_mode & CACHING_RELEASE) != 0)  {
+                _mode ^= CACHING_RELEASE;
+
+                if (result == Core::ERROR_DESTRUCTION_SUCCEEDED) {
+                    response.Action(RPC::Data::Output::mode::CACHED_RELEASE);
+                }
+            }
+
+            _adminLock.Unlock();
+
+            if (result == Core::ERROR_DESTRUCTION_SUCCEEDED) {
+                delete &_parent;
+            }
+        }
+        inline void Complete(RPC::Data::Output& response)
+        {
+            uint32_t result = Release();
+
+            _adminLock.Lock();
+
+            if ((_mode & CACHING_ADDREF) != 0) {
+
+                // We completed the first cycle. Clear Pending, if it was active..
+                _mode ^= CACHING_ADDREF;
+
+                if (_refCount > 1) {
+                    response.AddImplementation(_implementation, _interfaceId, RPC::Data::Output::mode::CACHED_ADDREF);
+                }
+            }
+            else if ((_mode & CACHING_RELEASE) != 0)  {
+
+                // We completed the current cycle. Clear the CACHING_RELEASE, if it was active..
+                _mode ^= CACHING_RELEASE;
+
+                if (result == Core::ERROR_DESTRUCTION_SUCCEEDED) {
+                    response.AddImplementation(_implementation, _interfaceId, RPC::Data::Output::mode::CACHED_RELEASE);
+                }
+            }
+
+            _adminLock.Unlock();
+
+            if (result == Core::ERROR_DESTRUCTION_SUCCEEDED) {
+                delete &_parent;
+            }
+        }
+        inline uint32_t Complete(const Core::instance_id& impl, const uint32_t id, const RPC::Data::Output::mode how) const
+        {
+            // This method is called from the stubs.
+            uint32_t result = Core::ERROR_NONE;
+
+            if (how == RPC::Data::Output::mode::CACHED_ADDREF) {
+                // Just AddRef this implementation
+                RPC::Administrator::Instance().AddRef(_channel, reinterpret_cast<void*>(impl), id);
+            }
+            else if (how == RPC::Data::Output::mode::CACHED_RELEASE) {
+                // Just Release this implementation
+                RPC::Administrator::Instance().Release(_channel, reinterpret_cast<void*>(impl), id, 1);
+            }
+            else {
+                ASSERT(!"Invalid caching data");
+                result = Core::ERROR_INVALID_RANGE;
+            }
+
+            return (result);
+        }
+        inline string Name() const {
+            return Core::ClassName(_name).Text();
+        }
+
+    private:
+        friend RPC::Administrator;
+
+        // -------------------------------------------------------------------------------------------------------------------------------
+        // Stub environment calls
+        // -------------------------------------------------------------------------------------------------------------------------------
+        // This method should only be called from the administrator from stub implementation methods
+        // It should be called through the Administrator::Release(ProxyStub*, Message::Response) !!
+        // Concurrent access trhough this code is prevented by the CriticalSection in the Administrator
+        template <typename ACTUAL_INTERFACE>
+        inline ACTUAL_INTERFACE* QueryInterface() const
+        {
+            return (reinterpret_cast<ACTUAL_INTERFACE*>(QueryInterface(ACTUAL_INTERFACE::ID)));
+        }
+        inline void* QueryInterface(const uint32_t id) const
+        {
+            ASSERT (_interfaceId == id);
+
+            return (_parent.QueryInterface(id));
+        }
+        // The RPC::Administrator uses this to identifiy to what link this 
+        // proxy belongs. The LinkId is always called within the lock of the
+        // RPC::Administrator, and since it is onl used and called from there 
+        // and the clearing of the _channel is also only called from there,
+        // Invalidate(), It is safe to use it on the _channel in an unlocked
+        // fashion!!
+        uint32_t Id() const;
+
+        bool Invalidate() {
+            bool succeeded = false;
+            ASSERT(_refCount > 0);
+            _adminLock.Lock();
+            if (_channel.IsValid() == true) {
+                _refCount++;
+                _channel.Release();
+                succeeded = true;
+            }
+            _adminLock.Unlock();
+            return(succeeded);
+        }
+
+        void Shutdown() const;
+
+    private:
+        mutable Core::CriticalSection _adminLock;
+        mutable uint32_t _refCount;
+        uint8_t _mode;
+        const uint32_t _interfaceId;
+        Core::instance_id _implementation;
+        Core::IUnknown& _parent;
+        mutable Core::ProxyType<Core::IPCChannel> _channel;
+        uint32_t _remoteReferences;
+        const char* _name;
+    };
+
+    template <typename INTERFACE>
+    class UnknownProxyType : public INTERFACE {
+    public:
+        using BaseClass = UnknownProxyType<INTERFACE>;
+        using IPCMessage = Core::ProxyType<RPC::InvokeMessage>;
+
+    public:
+        UnknownProxyType(UnknownProxyType<INTERFACE>&&) = delete;
+        UnknownProxyType(const UnknownProxyType<INTERFACE>&) = delete;
+        UnknownProxyType<INTERFACE>& operator=(UnknownProxyType<INTERFACE>&&) = delete;
+        UnknownProxyType<INTERFACE>& operator=(const UnknownProxyType<INTERFACE>&) = delete;
+
+        PUSH_WARNING(DISABLE_WARNING_THIS_IN_MEMBER_INITIALIZER_LIST)
+        UnknownProxyType(const Core::ProxyType<Core::IPCChannel>& channel, const Core::instance_id& implementation, const bool outbound)
+            : _unknown(channel, implementation, INTERFACE::ID, outbound, *this, typeid(INTERFACE).name())
+        {
+        }
+        POP_WARNING()
+        ~UnknownProxyType() override = default;
+
+    public:
+        // -------------------------------------------------------------------------------------------------------------------------------
+        // Access to Proxy environment calls
+        // -------------------------------------------------------------------------------------------------------------------------------
+        operator const UnknownProxy*() const {
+            return (&_unknown);
+        }
+        operator UnknownProxy*() {
+            return (&_unknown);
+        }
+        operator const UnknownProxy&() const {
+            return (_unknown);
+        }
+        operator UnknownProxy&() {
+            return (_unknown);
+        }
+
+    public:
+        // -------------------------------------------------------------------------------------------------------------------------------
+        // Applications calls to the Proxy
+        // -------------------------------------------------------------------------------------------------------------------------------
+        uint32_t AddRef() const override
+        {
+            return (_unknown.AddRef());
+        }
+        uint32_t Release() const override
+        {
+            uint32_t result = _unknown.Release();
+
+            if (result == Core::ERROR_DESTRUCTION_SUCCEEDED) {
+                delete (this);
+            }
+
+            return (result);
+        }
+        void* QueryInterface(const uint32_t interfaceNumber, const bool asIUnknown) override
+        {
+            void* result = nullptr;
+
+            if (interfaceNumber == INTERFACE::ID) {
+                // Just AddRef and return..
+                _unknown.AddRef();
+                asIUnknown == false ? result = static_cast<INTERFACE*>(this) : result = static_cast<Core::IUnknown*>(this);
+            } else if (interfaceNumber == Core::IUnknown::ID) {
+                // Just AddRef and return..
+                _unknown.AddRef();
+                result = static_cast<Core::IUnknown*>(this);
+            } else {
+                result = _unknown.RemoteInterface(interfaceNumber, asIUnknown);
+            }
+
+            return (result);
+        }
+
+    private:
+        UnknownProxy _unknown;
+    };
+}
+} // namespace ProxyStub
+
+#endif //  __COM_IUNKNOWN_H

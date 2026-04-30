@@ -1,0 +1,23 @@
+name: Build ThunderNanoServices on MacOS
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["master"]
+  pull_request:
+    branches: ["master"]
+
+jobs:
+  Thunder_MacOS:
+    uses: rdkcentral/Thunder/.github/workflows/MacOS build template.yml@master
+
+  ThunderInterfaces_MacOS:
+    needs: Thunder_MacOS
+    uses: rdkcentral/ThunderInterfaces/.github/workflows/MacOS build template.yml@master
+
+  ThunderNanoServices_MacOS:
+    needs: ThunderInterfaces_MacOS
+    uses: ./.github/workflows/MacOS build template.yml

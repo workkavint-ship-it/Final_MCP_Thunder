@@ -1,0 +1,1648 @@
+ /*
+ * If not stated otherwise in this file or this component's LICENSE file the
+ * following copyright and licenses apply:
+ *
+ * Copyright 2020 Metrological
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include "Controller.h"
+#include "SystemInfo.h"
+
+#include <plugins/json/json_IController.h>
+
+namespace Thunder {
+
+    namespace {
+
+        static Plugin::Metadata<Plugin::Controller> metadata(
+            // Version (Major, Minor, Patch)
+            1, 0, 0, 
+
+            // precondition
+            {},
+
+            // terminaltion
+            {},
+
+            // control
+            {}
+        );
+
+        inline Exchange::Controller::ILifeTime::state ToLifeTimeState(const PluginHost::IStateControl::state input)
+        {
+            using SC = PluginHost::IStateControl;
+            using LT = Exchange::Controller::ILifeTime;
+
+            switch (input) {
+            case SC::SUSPENDED:
+                return (LT::SUSPENDED);
+            case SC::RESUMED:
+                return (LT::RESUMED);
+            case SC::UNINITIALIZED:
+            case SC::EXITED:
+            default:
+                return (LT::UNKNOWN);
+            }
+        }
+    }
+
+namespace Plugin {
+
+    // Signing will be done on BackOffice level. The Controller I/F will never be exposed to the outside world.
+    // Access to this interface will be through the BackOffice Plugin, if external exposure is required !!!
+    // typedef Web::SignedJSONBodyType<Plugin::Config, Crypto::SHA256HMAC> SignedConfig;
+    // Signing will be done on BackOffice level. The Controller I/F will never be exposed to the outside world.
+    static Core::ProxyPoolType<Web::JSONBodyType<PluginHost::Metadata>> jsonBodyMetadataFactory(1);
+    static Core::ProxyPoolType<Web::JSONBodyType<PluginHost::Metadata::Service>> jsonBodyServiceFactory(1);
+    static Core::ProxyPoolType<Web::JSONBodyType<PluginHost::Metadata::Version>> jsonBodyVersionFactory(1);
+    static Core::ProxyPoolType<Web::JSONBodyType<Core::JSON::ArrayType<PluginHost::CallstackData>>> jsonBodyCallstackFactory(1);
+    static Core::ProxyPoolType<Web::JSONBodyType<Core::JSON::ArrayType<PluginHost::Metadata::COMRPC>>> jsonBodyProxiesFactory(1);
+
+    static Core::ProxyPoolType<Web::TextBody> jsonBodyTextFactory(2);
+
+    void Controller::Callstack(const Core::thread_id id, Core::JSON::ArrayType<PluginHost::CallstackData>& response) const {
+        std::list<Core::callstack_info> stackList;
+
+        ::DumpCallStack(id, stackList);
+
+        for (const Core::callstack_info& entry : stackList) {
+            response.Add() = entry;
+        }
+    }
+
+   // Access to this interface will be through the BackOffice Plugin, if external exposure is required !!!
+    /* virtual */ const string Controller::Initialize(PluginHost::IShell* service)
+    {
+        ASSERT(_service == nullptr);
+        ASSERT(_probe == nullptr);
+
+        _resumes.clear();
+        _service = service;
+
+        RPC::ConnectorController::Instance().Announce(service);
+
+        _skipURL = static_cast<uint8_t>(_service->WebPrefix().length());
+
+        Config config;
+        config.FromString(_service->ConfigLine());
+
+        if (config.Probe.IsSet() == true) {
+            // "239.255.255.250:1900";
+            Core::NodeId node (config.Probe.Node.Value().c_str());
+
+            if (node.IsValid() == false) {
+                SYSLOG(Logging::Startup, (_T("Probing requested but invalid IP address [%s]"), config.Probe.Node.Value().c_str()));
+            }
+            else {
+                _probe = new Probe(node, _service, config.Probe.TTL.Value(), service->Model());
+            }
+        }
+
+        Core::JSON::ArrayType<Core::JSON::EnumType<PluginHost::ISubSystem::subsystem>>::ConstIterator eventListIterator(static_cast<const Config&>(config).SubSystems.Elements());
+
+        // Insert the subsystems found in the config..
+        while (eventListIterator.Next() == true) {
+            PluginHost::ISubSystem::subsystem current = eventListIterator.Current().Value();
+
+            if (current >= PluginHost::ISubSystem::END_LIST) {
+                Core::EnumerateType<PluginHost::ISubSystem::subsystem> name(current);
+                SYSLOG(Logging::Startup, (Core::Format(_T("Subsystem [%s] can not be used as a control value in controller config!!!"), name.Data())));
+            }
+            else {
+                _externalSubsystems.emplace_back(current);
+            }
+        }
+
+        if ((config.Resumes.IsSet() == true) && (config.Resumes.Length() > 0)) {
+            Core::JSON::ArrayType<Core::JSON::String>::Iterator index(config.Resumes.Elements());
+
+            while (index.Next() == true) {
+                _resumes.push_back(index.Current().Value());
+            }
+        }
+
+        _service->Register(&_systemInfoReport);
+
+        if (config.Ui.Value() == true) {
+            _service->EnableWebServer(_T("UI"), EMPTY_STRING);
+        } else {
+            _service->DisableWebServer();
+        }
+
+        Exchange::Controller::JConfiguration::Register(*this, this);
+        Exchange::Controller::JDiscovery::Register(*this, this);
+        Exchange::Controller::JSystem::Register(*this, this);
+        Exchange::Controller::JLifeTime::Register(*this, this, this);
+        Exchange::Controller::JMetadata::Register(*this, this);
+        Exchange::Controller::JSubsystems::Register(*this, this);
+        Exchange::Controller::JEvents::Register(*this, this);
+
+        // On succes return a name as a Callsign to be used in the URL, after the "service"prefix
+        return (_T(""));
+    }
+
+    /* virtual */ void Controller::Deinitialize(PluginHost::IShell* service)
+    {
+        ASSERT(_service == service);
+
+        Exchange::Controller::JConfiguration::Unregister(*this);
+        Exchange::Controller::JDiscovery::Unregister(*this);
+        Exchange::Controller::JSystem::Unregister(*this);
+        Exchange::Controller::JLifeTime::Unregister(*this);
+        Exchange::Controller::JMetadata::Unregister(*this);
+        Exchange::Controller::JSubsystems::Unregister(*this);
+        Exchange::Controller::JEvents::Unregister(*this);
+
+        // Detach the SubSystems, we are shutting down..
+        PluginHost::ISubSystem* subSystems(_service->SubSystems());
+
+        ASSERT(subSystems != nullptr);
+
+        if (subSystems != nullptr) {
+            subSystems->Unregister(&_systemInfoReport);
+            subSystems->Release();
+        }
+
+        if (_probe != nullptr) {
+            delete _probe;
+            _probe = nullptr;
+        }
+
+        _service->Unregister(&_systemInfoReport);
+
+        /* stop the file serving over http.... */
+        service->DisableWebServer();
+
+        RPC::ConnectorController::Instance().Revoke(service);
+    }
+
+    /* virtual */ string Controller::Information() const
+    {
+        // No additional info to report.
+        return (string());
+    }
+
+    /* virtual */ void Controller::Inbound(Web::Request& request)
+    {
+        ASSERT(request.HasBody() == false);
+
+        if (request.Verb == Web::Request::HTTP_POST) {
+            request.Body(PluginHost::IFactories::Instance().JSONRPC());
+        } else if (request.Verb == Web::Request::HTTP_PUT) {
+            Core::TextSegmentIterator index(Core::TextFragment(request.Path, _skipURL, static_cast<uint32_t>(request.Path.length()) - _skipURL), false, '/');
+
+            // Always skip the first one, it is an empty part because we start with a '/' if there are more parameters.
+            index.Next();
+
+            if ( (index.Next() == true) && (index.Current() == _T("Configuration")) ) {
+                request.Body(Core::ProxyType<Web::IBody>(jsonBodyTextFactory.Element()));
+            }
+        }
+    }
+
+    /* virtual */ Core::ProxyType<Web::Response> Controller::Process(const Web::Request& request)
+    {
+        ASSERT(_pluginServer != nullptr);
+
+        TRACE(Trace::Information, (string(_T("Received request"))));
+
+        Core::ProxyType<Web::Response> result;
+        Core::TextSegmentIterator index(Core::TextFragment(request.Path, _skipURL, static_cast<uint32_t>(request.Path.length()) - _skipURL), false, '/');
+
+        // Always skip the first one, it is an empty part because we start with a '/' if there are more parameters.
+        index.Next();
+
+        // For now, whatever the URL, we will just, on a get, drop all info we have
+        if (request.Verb == Web::Request::HTTP_POST) {
+            result = PluginHost::IFactories::Instance().Response();
+            result->ErrorCode = Web::STATUS_BAD_REQUEST;
+            result->Message = _T("There are no POST handlers!");
+        } else if (request.Verb == Web::Request::HTTP_GET) {
+            result = GetMethod(index);
+        } else if (request.Verb == Web::Request::HTTP_PUT) {
+            result = PutMethod(index, request);
+        } else if (request.Verb == Web::Request::HTTP_DELETE) {
+            // Time to remove a plugin, indicated by Current.
+            result = DeleteMethod(index, request);
+        }
+
+        return (result);
+    }
+
+    Core::hresult Controller::Persist(const Core::OptionalType<string>& callsign)
+    {
+        ASSERT(_pluginServer != nullptr);
+        Core::hresult result = _pluginServer->Persist(callsign);
+
+        // Normalise return code
+        if (result != Core::ERROR_NONE) {
+            result = Core::ERROR_GENERAL;
+        }
+        return result;
+    }
+
+    Core::hresult Controller::Restore(const Core::OptionalType<string>& callsign)
+    {
+        ASSERT(_pluginServer != nullptr);
+        Core::hresult result = _pluginServer->Restore(callsign);
+
+        // Normalise return code
+        if (result != Core::ERROR_NONE) {
+            result = Core::ERROR_GENERAL;
+        }
+        return result;
+    }
+
+    Core::hresult Controller::Delete(const string& path)
+    {
+        Core::hresult result = Core::ERROR_UNKNOWN_KEY;
+
+        ASSERT(_service != nullptr);
+
+        const string normalized_path = Core::File::Normalize(path, true /* safe paths only */);
+
+        if (normalized_path.empty() == true) {
+            result = Core::ERROR_PRIVILIGED_REQUEST;
+        }
+        else {
+            Core::File file(_service->PersistentPath() + normalized_path);
+
+            if (file.Exists() == false) {
+                result = Core::ERROR_UNKNOWN_KEY;
+            }
+            else if (file.IsDirectory() == true) {
+                result = (Core::Directory((_service->PersistentPath() + normalized_path).c_str()).Destroy() == true) ? Core::ERROR_NONE : Core::ERROR_DESTRUCTION_FAILED;
+            }
+            else {
+                result = (file.Destroy() == true) ? Core::ERROR_NONE : Core::ERROR_DESTRUCTION_FAILED;
+            }
+        }
+
+        return result;
+    }
+
+    Core::hresult Controller::Reboot()
+    {
+        Core::hresult result =  Core::System::Reboot();
+
+        if ((result != Core::ERROR_NONE) && (result != Core::ERROR_UNAVAILABLE) && (result != Core::ERROR_PRIVILIGED_REQUEST) && (result != Core::ERROR_GENERAL)) {
+            result = Core::ERROR_GENERAL;
+        }
+
+        return result;
+    }
+
+    Core::hresult Controller::Environment(const string& variable, string& value) const
+    {
+        Core::hresult result = Core::ERROR_UNKNOWN_KEY;
+
+        if (Core::SystemInfo::GetEnvironment(variable, value) == true) {
+            result = Core::ERROR_NONE;
+        }
+
+        return result;
+    }
+
+    Core::hresult Controller::Configuration(const Core::OptionalType<string>& callsign, string& configuration) const
+    {
+        Core::hresult result = Core::ERROR_UNKNOWN_KEY;
+        Core::ProxyType<PluginHost::IShell> service;
+
+        ASSERT(_pluginServer != nullptr);
+
+        if (_pluginServer->Services().FromIdentifier(callsign, service) == Core::ERROR_NONE) {
+            configuration = service->ConfigLine();
+            result = Core::ERROR_NONE;
+        }
+
+        return result;
+    }
+
+    Core::hresult Controller::Configuration(const string& callsign, const string& configuration)
+    {
+        Core::hresult result = Core::ERROR_UNKNOWN_KEY;
+        Core::ProxyType<PluginHost::IShell> service;
+
+        ASSERT(_pluginServer != nullptr);
+
+        if (_pluginServer->Services().FromIdentifier(callsign, service) == Core::ERROR_NONE) {
+            Core::JSON::Variant config;
+            Core::OptionalType<Core::JSON::Error> error;
+            config.FromString(configuration, error);
+            result = Core::ERROR_INCOMPLETE_CONFIG;
+            if (error.IsSet() == true) {
+                SYSLOG(Logging::ParsingError, (_T("Parsing failed with %s"), ErrorDisplayMessage(error.Value()).c_str()));
+            } else if (config.IsValid() != true) {
+                SYSLOG(Logging::ParsingError, (_T("Given configuration is not valid")));
+            } else {
+                result = service->ConfigLine(configuration);
+
+                // Normalise return code
+                if (result != Core::ERROR_NONE) {
+                    result = Core::ERROR_GENERAL;
+                }
+            }
+        }
+
+        return result;
+    }
+
+    Core::hresult Controller::Clone(const string& basecallsign, const string& newcallsign)
+    {
+        Core::hresult result = Core::ERROR_PRIVILIGED_REQUEST;
+        const string controllerName = _pluginServer->Controller()->Callsign();
+
+        ASSERT(_pluginServer != nullptr);
+
+        if ((basecallsign.empty() == false) && (newcallsign.empty() == false) && (basecallsign != controllerName) && (newcallsign != controllerName)) {
+            Core::ProxyType<PluginHost::IShell> baseService, newService;
+
+            if (_pluginServer->Services().FromIdentifier(basecallsign, baseService) != Core::ERROR_NONE) {
+                result = Core::ERROR_UNKNOWN_KEY;
+            }
+            else if (_pluginServer->Services().FromIdentifier(newcallsign, newService) == Core::ERROR_NONE) {
+                result = Core::ERROR_DUPLICATE_KEY;
+            }
+            else {
+                result = _pluginServer->Services().Clone(baseService, newcallsign, newService);
+            }
+        }
+
+        return result;
+    }
+
+    Core::hresult Controller::Destroy(const string& callsign)
+    {
+        Core::hresult result = Core::ERROR_PRIVILIGED_REQUEST;
+        const string controllerName = _pluginServer->Controller()->Callsign();
+
+        ASSERT(_pluginServer != nullptr);
+
+        if ((callsign.empty() == false) && (callsign != controllerName)) {
+            Core::ProxyType<PluginHost::IShell> service;
+
+            if (_pluginServer->Services().FromIdentifier(callsign, service) != Core::ERROR_NONE) {
+                result = Core::ERROR_UNKNOWN_KEY;
+            }
+            else {
+                _pluginServer->Services().Destroy(callsign);
+                result = Core::ERROR_NONE;
+            }
+        }
+
+        return result;
+    }
+
+    Core::hresult Controller::Hibernate(const string& callsign, const uint32_t timeout)
+    {
+        Core::hresult result = Core::ERROR_BAD_REQUEST;
+        const string controllerName = _pluginServer->Controller()->Callsign();
+
+        if ((callsign.empty() == false) && (callsign != controllerName)) {
+            Core::ProxyType<PluginHost::IShell> service;
+
+            if (_pluginServer->Services().FromIdentifier(callsign, service) != Core::ERROR_NONE) {
+                result = Core::ERROR_UNKNOWN_KEY;
+            }
+            else {
+                result = service->Hibernate(timeout);
+            }
+        }
+        return (result);
+    }
+
+    Core::ProxyType<Web::Response> Controller::GetMethod(Core::TextSegmentIterator& index) const
+    {
+        Core::ProxyType<Web::Response> result(PluginHost::IFactories::Instance().Response());
+        result->ContentType = Web::MIME_JSON;
+
+        result->ErrorCode = Web::STATUS_OK;
+        result->Message = "OK";
+
+        if (index.Next() == false) {
+            Core::ProxyType<Web::JSONBodyType<PluginHost::Metadata>> response(jsonBodyMetadataFactory.Element());
+
+            // No more parameters, flush it all..
+            _pluginServer->Metadata(response->Channels);
+            _pluginServer->Metadata(response->Plugins);
+            WorkerPoolMetadata(response->Process);
+
+            result->Body(Core::ProxyType<Web::IBody>(response));
+        } else if (index.Current() == _T("Links")) {
+            Core::ProxyType<Web::JSONBodyType<PluginHost::Metadata>> response(jsonBodyMetadataFactory.Element());
+
+            _pluginServer->Metadata(response->Channels);
+
+            result->Body(Core::ProxyType<Web::IBody>(response));
+        } else if (index.Current() == _T("Plugins")) {
+            Core::ProxyType<Web::JSONBodyType<PluginHost::Metadata>> response(jsonBodyMetadataFactory.Element());
+
+            _pluginServer->Services().GetMetadata(response->Plugins);
+
+            result->Body(Core::ProxyType<Web::IBody>(response));
+        } else if (index.Current() == _T("Environment")) {
+            // We do not want Environment to be included in the variable
+            if (index.Next() == true) {
+                string value;
+
+                if (Core::SystemInfo::GetEnvironment(index.Remainder().Text(), value) == true) {
+                    Core::ProxyType<Web::JSONBodyType<PluginHost::Metadata>> response(jsonBodyMetadataFactory.Element());
+                    response->Value = value;
+
+                    result->Body(Core::ProxyType<Web::IBody>(response));
+                } else {
+                    result->ErrorCode = Web::STATUS_NO_CONTENT;
+                    result->Message = _T("Environment variable does not exist");
+                }
+            }
+        } else if (index.Current() == _T("Plugin")) {
+            if (index.Next() == true) {
+                Core::ProxyType<PluginHost::Server::Service> serviceInfo(FromIdentifier(index.Current().Text()));
+
+                if (serviceInfo.IsValid() == true) {
+                    Core::ProxyType<Web::JSONBodyType<PluginHost::Metadata::Service>> response(jsonBodyServiceFactory.Element());
+
+                    serviceInfo->GetMetadata(*response);
+
+                    result->Body(Core::ProxyType<Web::IBody>(response));
+                }
+            }
+        } else if (index.Current() == _T("Configuration")) {
+            if (index.Next() == true) {
+                Core::ProxyType<PluginHost::Service> serviceInfo(FromIdentifier(index.Current().Text()));
+
+                if (serviceInfo.IsValid() == true) {
+                    Core::ProxyType<Web::TextBody> response(jsonBodyTextFactory.Element());
+
+                    *response = serviceInfo->ConfigLine();
+
+                    result->Body(Core::ProxyType<Web::IBody>(response));
+                }
+            }
+        } else if (index.Current() == _T("Process")) {
+            Core::ProxyType<Web::JSONBodyType<PluginHost::Metadata>> response(jsonBodyMetadataFactory.Element());
+
+            WorkerPoolMetadata(response->Process);
+
+            result->Body(Core::ProxyType<Web::IBody>(response));
+        } else if (index.Current() == _T ("Callstack")) {
+            if (index.Next() == false) {
+                result->ErrorCode = Web::STATUS_BAD_REQUEST;
+                result->Message = _T("Please supply an index for the callstack you need!");
+            }
+            else {
+                Core::NumberType<uint8_t> threadIndex(index.Current());
+
+                Core::ProxyType<Web::JSONBodyType<Core::JSON::ArrayType<PluginHost::CallstackData>>> response = jsonBodyCallstackFactory.Element();
+                Callstack(_pluginServer->WorkerPool().Id(threadIndex.Value()), *response);
+                result->Body(Core::ProxyType<Web::IBody>(response));
+            }
+        } else if (index.Current() == _T ("Monitor")) {
+            Core::NumberType<uint8_t> threadIndex(index.Current());
+            Core::ProxyType<Web::JSONBodyType<Core::JSON::ArrayType<PluginHost::CallstackData>>> response = jsonBodyCallstackFactory.Element();
+            Callstack(Core::ResourceMonitor::Instance().Id(), *response);
+            result->Body(Core::ProxyType<Web::IBody>(response));
+        } else if (index.Current() == _T("Discovery")) {
+
+            if (_probe == nullptr) {
+                result->ErrorCode = Web::STATUS_BAD_REQUEST;
+                result->Message = _T("Probe functionality not enabled!");
+            }
+            else {
+                Core::ProxyType<Web::JSONBodyType<PluginHost::Metadata>> response(jsonBodyMetadataFactory.Element());
+
+                Probe::Iterator index(_probe->Instances());
+
+                while (index.Next() == true) {
+                    PluginHost::Metadata::Bridge newElement;
+                    newElement.Locator = (*index).URL().Text();
+                    newElement.Latency = (*index).Latency();
+                    if ((*index).Model().empty() == false) {
+                        newElement.Model = (*index).Model();
+                    }
+                    newElement.Secure = (*index).IsSecure();
+                    response->Bridges.Add(newElement);
+                }
+
+                result->Body(Core::ProxyType<Web::IBody>(response));
+            }
+
+        } else if (index.Current() == _T("SubSystems")) {
+            PluginHost::ISubSystem* subSystem = _service->SubSystems();
+            Core::ProxyType<Web::JSONBodyType<PluginHost::Metadata>> response(jsonBodyMetadataFactory.Element());
+
+            uint8_t index(0);
+            if (subSystem != nullptr) {
+                while (index < PluginHost::ISubSystem::END_LIST) {
+                    PluginHost::ISubSystem::subsystem current(static_cast<PluginHost::ISubSystem::subsystem>(index));
+                    response->SubSystems.Add(current, subSystem->IsActive(current));
+                    ++index;
+                }
+                subSystem->Release();
+            }
+
+            result->Body(Core::ProxyType<Web::IBody>(response));
+        }
+        else if (index.Current() == _T("Version")) {
+            Core::ProxyType<Web::JSONBodyType<PluginHost::Metadata::Version>> response(jsonBodyVersionFactory.Element());
+            _pluginServer->Metadata(*response);
+            result->Body(Core::ProxyType<Web::IBody>(response));
+        } else {
+            result->ErrorCode = Web::STATUS_BAD_REQUEST;
+            result->Message = _T("Bad request.");
+        }
+
+        return (result);
+    }
+    Core::ProxyType<Web::Response> Controller::PutMethod(Core::TextSegmentIterator& index, const Web::Request& request)
+    {
+        Core::ProxyType<Web::Response> result(PluginHost::IFactories::Instance().Response());
+
+        // All PUT commands require an additional parameter, so go look for it.
+        if (index.Next() == true) {
+            if (index.Current() == _T("Activate")) {
+                if (index.Next()) {
+                    const string callSign(index.Current().Text());
+                    if (callSign == _service->Callsign()) {
+                        result->ErrorCode = Web::STATUS_FORBIDDEN;
+                        result->Message = _T("The PluginHost Controller can not be activated.");
+                    } else {
+                        Core::ProxyType<PluginHost::Server::Service> pluginInfo(FromIdentifier(callSign));
+
+                        if (pluginInfo.IsValid()) {
+                            if (pluginInfo->State() == PluginHost::IShell::DEACTIVATED) {
+                                // Activate the plugin.
+                                uint32_t returnCode = pluginInfo->Activate(PluginHost::IShell::REQUESTED);
+
+                                // See if this was a successful activation...
+                                if (pluginInfo->HasError() == true) {
+                                    // Oops seems we failed. Send out the error message
+                                    result->ErrorCode = Web::STATUS_INTERNAL_SERVER_ERROR;
+                                    result->Message = pluginInfo->ErrorMessage();
+                                } else if (returnCode != Core::ERROR_NONE) {
+                                    result->ErrorCode = Web::STATUS_NOT_MODIFIED;
+                                    result->Message = _T("Activation already in progress.");
+                                }
+                            }
+                        } else {
+                            result->ErrorCode = Web::STATUS_NOT_FOUND;
+                            result->Message = _T("There is no callsign: ") + callSign;
+                        }
+                    }
+                }
+            } else if (index.Current() == _T("Deactivate")) {
+                if (index.Next()) {
+                    const string callSign(index.Current().Text());
+                    if (callSign == _service->Callsign()) {
+                        result->ErrorCode = Web::STATUS_FORBIDDEN;
+                        result->Message = _T("The PluginHost Controller can not be deactivated.");
+                    } else {
+                        Core::ProxyType<PluginHost::Server::Service> pluginInfo(FromIdentifier(callSign));
+
+                        if (pluginInfo.IsValid()) {
+                            if (pluginInfo->State() == PluginHost::IShell::ACTIVATED) {
+                                // Deactivate the plugin.
+                                if (pluginInfo->Deactivate(PluginHost::IShell::REQUESTED) != Core::ERROR_NONE) {
+                                    result->ErrorCode = Web::STATUS_NOT_MODIFIED;
+                                    result->Message = _T("Deactivation already in progress.");
+                                }
+                            }
+                        } else {
+                            result->ErrorCode = Web::STATUS_NOT_FOUND;
+                            result->Message = _T("There is no callsign: ") + callSign;
+                        }
+                    }
+                }
+            } else if (index.Current() == _T("Unavailable")) {
+                if (index.Next()) {
+                    const string callSign(index.Current().Text());
+                    if (callSign == _service->Callsign()) {
+                        result->ErrorCode = Web::STATUS_FORBIDDEN;
+                        result->Message = _T("The PluginHost Controller can not set Unavailable.");
+                    } else {
+                        Core::ProxyType<PluginHost::Server::Service> pluginInfo(FromIdentifier(callSign));
+
+                        if (pluginInfo.IsValid()) {
+                            if (pluginInfo->State() == PluginHost::IShell::DEACTIVATED) {
+                                // Mark the plugin as unavailable.
+                                if (pluginInfo->Unavailable(PluginHost::IShell::REQUESTED) != Core::ERROR_NONE) {
+                                    result->ErrorCode = Web::STATUS_NOT_MODIFIED;
+                                    result->Message = _T("Marking the plugin as Unavailble failed.");
+                                }
+                            }
+                        } else {
+                            result->ErrorCode = Web::STATUS_NOT_FOUND;
+                            result->Message = _T("There is no callsign: ") + callSign;
+                        }
+                    }
+                }
+            } else if (index.Current() == _T("Configuration")) {
+                if ((index.Next() == true) && (request.HasBody() == true)) {
+
+                    Core::ProxyType<PluginHost::Service> serviceInfo(FromIdentifier(index.Current().Text()));
+                    Core::ProxyType<const Web::TextBody> data(request.Body<const Web::TextBody>());
+
+                    if ((data.IsValid() == false) || (serviceInfo.IsValid() == false)) {
+
+                        result->ErrorCode = Web::STATUS_BAD_REQUEST;
+                        result->Message = _T("Not sufficent data to comply to the request");
+                    } else {
+
+                        uint32_t error;
+
+                        if ((error = serviceInfo->ConfigLine(*data)) == Core::ERROR_NONE) {
+                            result->ErrorCode = Web::STATUS_OK;
+                        } else {
+                            result->ErrorCode = Web::STATUS_BAD_REQUEST;
+                            result->Message = _T("Could not update the config. Error: ") + Core::NumberType<uint32_t>(error).Text();
+                        }
+                    }
+                }
+            } else if (index.Current() == _T("Discovery")) {
+                if (_probe != nullptr) {
+                    result->ErrorCode = Web::STATUS_BAD_REQUEST;
+                    result->Message = _T("Probe functionality not enabled!");
+                }
+                else {
+                    Core::URL::KeyValue options(request.Query.Value());
+                    uint8_t ttl = options.Number<uint8_t>(_T("TTL"), 0);
+
+                    _probe->Ping(ttl);
+
+                    result->ErrorCode = Web::STATUS_OK;
+                    result->Message = _T("Discovery cycle initiated");
+                }
+            } else if (index.Current() == _T("Persist")) {
+
+                _pluginServer->Persist(Core::OptionalType<string>());
+
+                result->ErrorCode = Web::STATUS_OK;
+                result->Message = _T("Current configuration stored");
+            } else if (index.Current() == _T("Harakiri")) {
+                uint32_t status = Core::System::Reboot();
+                if (status == Core::ERROR_NONE) {
+                    result->ErrorCode = Web::STATUS_OK;
+                } else {
+                    result->ErrorCode = Web::STATUS_BAD_REQUEST;
+                    result->Message = _T("Could not issue a reboot request. Error: ") + Core::NumberType<uint32_t>(status).Text();
+                }
+            }
+        }
+        return (result);
+    }
+
+    Core::ProxyType<Web::Response> Controller::DeleteMethod(Core::TextSegmentIterator& index, const Web::Request& /* request */)
+    {
+        Core::ProxyType<Web::Response> result(PluginHost::IFactories::Instance().Response());
+
+        // All delete commands require an additional parameter, so go look for it.
+        if (index.Next() == true) {
+            if (index.Current() == _T("Persistent")) {
+                string remainder;
+
+                if (index.Next() == true) {
+                    remainder = index.Remainder().Text();
+                }
+
+                const string normalized(Core::File::Normalize(remainder, true /* safe paths only */));
+
+                if (normalized.empty() == true) {
+                    result->Message = "incorrect path";
+                    result->ErrorCode = Web::STATUS_BAD_REQUEST;
+                }
+                else {
+                    Core::Directory((_service->PersistentPath() + normalized).c_str()).Destroy();
+                    result->Message = "OK";
+                    result->ErrorCode = Web::STATUS_OK;
+                }
+            }
+        }
+        return (result);
+    }
+
+    void Controller::StartupResume(const string& callsign, PluginHost::IShell* plugin)
+    {
+        if (_resumes.size() > 0) {
+            Resumes::iterator index(_resumes.begin());
+
+            ASSERT(_service != nullptr);
+
+            while ((index != _resumes.end()) && (*index != callsign)) {
+                index++;
+            }
+
+            if (index != _resumes.end()) {
+
+                PluginHost::IStateControl* stateControl = plugin->QueryInterface<PluginHost::IStateControl>();
+
+                TRACE_L1("Resuming %s", callsign.c_str());
+
+                if (stateControl != nullptr) {
+                    uint32_t error = stateControl->Request(PluginHost::IStateControl::RESUME);
+
+                    if (error != Core::ERROR_NONE) {
+                        TRACE_L1("Failed to resume %s, error %d", callsign.c_str(), error);
+                    }
+
+                    stateControl->Release();
+                }
+
+                _resumes.erase(index);
+            }
+        }
+    }
+
+    void Controller::SubSystems()
+    {
+        PluginHost::Metadata response;
+        Core::JSON::ArrayType<JsonData::Subsystems::SubsystemInfo> responseJsonRpc;
+        PluginHost::ISubSystem* subSystem = _service->SubSystems();
+
+        // Now prepare a message for the Javascript world.
+        bool sendReport = false;
+        uint8_t index(0);
+
+        _adminLock.Lock();
+
+        if (subSystem != nullptr) {
+            uint32_t reportMask = 0;
+
+            while (index < PluginHost::ISubSystem::END_LIST) {
+                PluginHost::ISubSystem::subsystem current(static_cast<PluginHost::ISubSystem::subsystem>(index));
+                uint32_t bit(1 << index);
+                reportMask |= (subSystem->IsActive(current) ? bit : 0);
+
+                if (((reportMask & bit) != 0) ^ ((_lastReported & bit) != 0)) {
+                    JsonData::Subsystems::SubsystemInfo status;
+                    status.Subsystem = current;
+                    status.Active = ((reportMask & bit) != 0);
+                    responseJsonRpc.Add(status);
+                    response.SubSystems.Add(current, ((reportMask & bit) != 0));
+
+                    sendReport = true;
+                }
+                ++index;
+            }
+
+            _lastReported = reportMask;
+            subSystem->Release();
+        }
+
+        _adminLock.Unlock();
+
+        if (sendReport == true) {
+
+            string message;
+            response.ToString(message);
+            TRACE_L1("Sending out a SubSystem change notification. %s", message.c_str());
+
+            _service->Notify(EMPTY_STRING, message);
+
+            Exchange::Controller::JSubsystems::Event::SubsystemChange(*this, responseJsonRpc);
+        }
+    }
+
+    Core::hresult Controller::Invoke(const uint32_t channelId, const uint32_t id, const string& token, const string& method, const string& parameters, string& response /* @out */) /* override */
+    {
+        Core::hresult result = Core::ERROR_BAD_REQUEST;
+
+        const size_t indexDelimiter = method.find_last_of(TCHAR('@'));
+        const size_t compositeDelimiter = method.find_last_of(PluginHost::ICompositPlugin::Delimiter, indexDelimiter);
+        string callsign;
+
+        if ((compositeDelimiter == string::npos) && (((callsign = Core::JSONRPC::Message::Callsign(method), callsign.empty() == true) || (callsign == PluginHost::JSONRPC::Callsign())))) {
+            result = PluginHost::JSONRPC::Invoke(channelId, id, token, method, parameters, response);
+        }
+        else {
+            Core::ProxyType<PluginHost::IShell> service;
+
+            if (compositeDelimiter != string::npos) {
+                // Composite designator: split it into bridge and callsign
+                const size_t versionDelimiter = method.find_last_of(TCHAR('.'), compositeDelimiter);
+                const string bridge = method.substr(0, (versionDelimiter == string::npos? compositeDelimiter : versionDelimiter));
+                callsign = Core::JSONRPC::Message::Callsign(method.substr(compositeDelimiter + 1));
+                result =  _pluginServer->Services().FromIdentifier(bridge, (callsign.empty() == true? PluginHost::JSONRPC::Callsign() : callsign), service);
+            }
+            else {
+                result = _pluginServer->Services().FromIdentifier(callsign, service);
+            }
+
+            if (result == Core::ERROR_NONE) {
+                ASSERT(service.IsValid() == true);
+
+                PluginHost::IShell::state currrentState = service->State();
+
+                if (currrentState != PluginHost::IShell::state::ACTIVATED) {
+                    result = (currrentState == PluginHost::IShell::state::HIBERNATED ? Core::ERROR_HIBERNATED : Core::ERROR_UNAVAILABLE);
+                }
+                else {
+                    PluginHost::IDispatcher* dispatcher = service->QueryInterface<PluginHost::IDispatcher>();
+
+                    if (dispatcher != nullptr) {
+                        result = dispatcher->Invoke(channelId, id, token, method, parameters, response);
+
+                        dispatcher->Release();
+                    } else {
+                        TRACE_L1("IDispatcher is not available for %s plugin", callsign.c_str());
+                        result = Core::ERROR_BAD_REQUEST;
+                    }
+                }
+            }
+        }
+
+        return (result);
+    }
+
+    Core::hresult Controller::Register(Exchange::Controller::ILifeTime::INotification* notification, const Core::OptionalType<string>& callsign)
+    {
+        ASSERT(notification != nullptr);
+
+        Core::hresult result = Core::ERROR_ALREADY_CONNECTED;
+        _adminLock.Lock();
+
+        bool conflict = false;
+
+        for (const auto& entry : _lifeTimeObservers) {
+
+            if (entry.first == notification) {
+
+                if (entry.second.IsSet() == false) {
+                    // Already registered for all
+                    conflict = true;
+                    break;
+                }
+
+                if (callsign.IsSet() == false) {
+                    // Can't register for all, because at least one specific callsign is already registered
+                    conflict = true;
+                    break;
+                }
+
+                if (entry.second.Value() == callsign.Value()) {
+                    // Duplicate registration for a specific callsign is not allowed
+                    conflict = true;
+                    break;
+                }
+            }
+        }
+
+        ASSERT(conflict == false);
+
+        if (conflict == false) {
+            notification->AddRef();
+            _lifeTimeObservers.emplace_back(notification, callsign);
+            result = Core::ERROR_NONE;
+
+            if (callsign.IsSet() == true) {
+                Core::ProxyType<PluginHost::IShell> service = FromIdentifier(callsign.Value());
+
+                if (service.IsValid() == true) {
+
+                    if (service->State() == PluginHost::IShell::state::ACTIVATED) {
+                        notification->StateChange(service->Callsign(), service->State(), service->Reason());
+                    }
+
+                    PluginHost::IStateControl* control = service->QueryInterface<PluginHost::IStateControl>();
+
+                    if (control != nullptr) {
+                        const Exchange::Controller::ILifeTime::state ltState = ToLifeTimeState(control->State());
+                        notification->StateControlStateChange(service->Callsign(), ltState);
+                        control->Release();
+                    }
+                }
+            }
+            else {
+                auto it = _pluginServer->Services().Services();
+
+                while (it.Next() == true) {
+                    Core::ProxyType<PluginHost::IShell> service = it.Current();
+
+                    if (service->State() == PluginHost::IShell::state::ACTIVATED) {
+                        notification->StateChange(service->Callsign(), service->State(), service->Reason());
+                    }
+                }
+            }
+        }
+
+        _adminLock.Unlock();
+
+        return (result);
+    }
+
+    Core::hresult Controller::Unregister(Exchange::Controller::ILifeTime::INotification* notification, const Core::OptionalType<string>& callsign)
+    {
+        ASSERT(notification != nullptr);
+
+        Core::hresult result = Core::ERROR_NOT_EXIST;
+        _adminLock.Lock();
+
+        auto match = [&](const LifeTimeObserver& entry) -> bool {
+            return ((entry.first == notification) &&
+                    ((callsign.IsSet() == false) ?
+                        (entry.second.IsSet() == false) :
+                        ((entry.second.IsSet() == true) && (entry.second.Value() == callsign.Value()))));
+        };
+
+        for (auto it = _lifeTimeObservers.begin(); it != _lifeTimeObservers.end(); ++it) {
+
+            if (match(*it) == true) {
+                it->first->Release();
+                _lifeTimeObservers.erase(it);
+                result = Core::ERROR_NONE;
+                break;
+            }
+        }
+
+        // Make sure you do not unregister something you did not register !!!
+        ASSERT(result == Core::ERROR_NONE);
+
+        _adminLock.Unlock();
+
+        return (result);
+    }
+
+    Core::hresult Controller::Register(Exchange::Controller::IShells::INotification* notification)
+    {
+        _pluginServer->Services().Register(notification);
+
+        return (Core::ERROR_NONE);
+    }
+
+    Core::hresult Controller::Unregister(Exchange::Controller::IShells::INotification* notification)
+    {
+        _pluginServer->Services().Unregister(notification);
+
+        return (Core::ERROR_NONE);
+    }
+
+    Core::hresult Controller::Activate(const string& callsign)
+    {
+        Core::hresult result = Core::ERROR_NONE;
+        ASSERT(_pluginServer != nullptr);
+
+        if (callsign != Callsign()) {
+            Core::ProxyType<PluginHost::IShell> service;
+
+            if (_pluginServer->Services().FromIdentifier(callsign, service) == Core::ERROR_NONE) {
+                ASSERT(service.IsValid());
+                result = service->Activate(PluginHost::IShell::REQUESTED);
+
+                // Normalise return code
+                if ((result != Core::ERROR_NONE) && (result != Core::ERROR_ILLEGAL_STATE) && (result !=  Core::ERROR_INPROGRESS) && (result != Core::ERROR_PENDING_CONDITIONS)) {
+                    result = Core::ERROR_OPENING_FAILED;
+                }
+            }
+            else {
+                result = Core::ERROR_UNKNOWN_KEY;
+            }
+        }
+        else {
+            result = Core::ERROR_PRIVILIGED_REQUEST;
+        }
+        return result;
+    }
+
+    Core::hresult Controller::Deactivate(const string& callsign)
+    {
+        Core::hresult result = Core::ERROR_NONE;
+
+        ASSERT(_pluginServer != nullptr);
+
+        if (callsign != Callsign()) {
+            Core::ProxyType<PluginHost::IShell> service;
+
+            if (_pluginServer->Services().FromIdentifier(callsign, service) == Core::ERROR_NONE) {
+                ASSERT(service.IsValid());
+                result = service->Deactivate(PluginHost::IShell::REQUESTED);
+                // Normalise return code
+                if ((result != Core::ERROR_NONE) && (result != Core::ERROR_ILLEGAL_STATE) && (result !=  Core::ERROR_INPROGRESS)) {
+                    result = Core::ERROR_CLOSING_FAILED;
+                }
+            }
+            else {
+                result = Core::ERROR_UNKNOWN_KEY;
+            }
+        }
+        else {
+            result = Core::ERROR_PRIVILIGED_REQUEST;
+        }
+
+        return result;
+    }
+
+    Core::hresult Controller::Unavailable(const string& callsign)
+    {
+        Core::hresult result = Core::ERROR_NONE;
+        ASSERT(_pluginServer != nullptr);
+
+        if (callsign != Callsign()) {
+            Core::ProxyType<PluginHost::IShell> service;
+
+            if (_pluginServer->Services().FromIdentifier(callsign, service) == Core::ERROR_NONE) {
+                ASSERT(service.IsValid());
+                result = service->Unavailable(PluginHost::IShell::REQUESTED);
+
+                // Normalise return code
+                if ((result != Core::ERROR_NONE) && (result != Core::ERROR_ILLEGAL_STATE) && (result !=  Core::ERROR_INPROGRESS)) {
+                    result = Core::ERROR_CLOSING_FAILED;
+                }
+            }
+            else {
+                result = Core::ERROR_UNKNOWN_KEY;
+            }
+        }
+        else {
+            result = Core::ERROR_PRIVILIGED_REQUEST;
+        }
+        return result;
+    }
+
+    Core::hresult Controller::Suspend(const string& callsign)
+    {
+        Core::hresult result = Core::ERROR_NONE;
+        ASSERT(_pluginServer != nullptr);
+
+        if (callsign != Callsign()) {
+            Core::ProxyType<PluginHost::IShell> service;
+
+            if (_pluginServer->Services().FromIdentifier(callsign, service) == Core::ERROR_NONE) {
+                ASSERT(service.IsValid());
+                PluginHost::IStateControl* stateControl = service->QueryInterface<PluginHost::IStateControl>();
+
+                if (stateControl == nullptr) {
+                    result = Core::ERROR_NOT_SUPPORTED;
+                }
+                else {
+                    result = stateControl->Request(PluginHost::IStateControl::command::SUSPEND);
+                    stateControl->Release();
+                }
+            }
+            else {
+                result = Core::ERROR_UNKNOWN_KEY;
+            }
+        }
+        else {
+            result = Core::ERROR_PRIVILIGED_REQUEST;
+        }
+        return result;
+    }
+
+    Core::hresult Controller::Resume(const string& callsign)
+    {
+        Core::hresult result = Core::ERROR_NONE;
+        ASSERT(_pluginServer != nullptr);
+
+        if (callsign != Callsign()) {
+            Core::ProxyType<PluginHost::IShell> service;
+
+            if (_pluginServer->Services().FromIdentifier(callsign, service) == Core::ERROR_NONE) {
+                ASSERT(service.IsValid());
+                PluginHost::IStateControl* stateControl = service->QueryInterface<PluginHost::IStateControl>();
+
+                if (stateControl == nullptr) {
+                    result = Core::ERROR_NOT_SUPPORTED;
+                }
+                else {
+                    result = stateControl->Request(PluginHost::IStateControl::command::RESUME);
+                    stateControl->Release();
+                }
+            }
+            else {
+                result = Core::ERROR_UNKNOWN_KEY;
+            }
+        }
+        else {
+            result = Core::ERROR_PRIVILIGED_REQUEST;
+        }
+
+        return result;
+    }
+
+    Core::hresult Controller::Clone(const string& callsign, const string& newcallsign, string& response)
+    {
+        Core::hresult result = Clone(callsign, newcallsign);
+
+        if (result == Core::ERROR_NONE) {
+            response = newcallsign;
+        }
+        return result;
+    }
+
+    Core::hresult Controller::StartDiscovery(const Core::OptionalType<uint8_t>& ttl)
+    {
+        if (_probe != nullptr) {
+            _probe->Ping(ttl);
+        }
+
+        return Core::ERROR_NONE;
+    }
+
+    Core::hresult Controller::DiscoveryResults(IDiscovery::Data::IDiscoveryResultsIterator*& outResults) const
+    {
+        std::vector<IDiscovery::Data::DiscoveryResult> results;
+
+        if (_probe != nullptr) {
+            Probe::Iterator index(_probe->Instances());
+            results.reserve(_probe->Instances().Count());
+
+            while (index.Next() == true) {
+                IDiscovery::Data::DiscoveryResult result;
+                result.Locator = (*index).URL().Text();
+                result.Latency = (*index).Latency();
+                result.Secure = (*index).IsSecure();
+                if ((*index).Model().empty() == false) {
+                    result.Model = (*index).Model();
+                }
+
+                results.push_back(std::move(result));
+            }
+        }
+
+        if (results.empty() == false) {
+            using Iterator = IDiscovery::Data::IDiscoveryResultsIterator;
+            using IteratorImpl = RPC::IteratorType<Iterator, decltype(results)>;
+
+            outResults = Core::ServiceType<IteratorImpl>::Create<Iterator>(std::move(results));
+            ASSERT(outResults != nullptr);
+        }
+        else {
+            outResults = nullptr;
+        }
+
+        return (Core::ERROR_NONE);
+    }
+
+    Core::hresult Controller::Services(const Core::OptionalType<string>& callsign, IMetadata::Data::IServicesIterator*& outServices) const
+    {
+        Core::hresult result = Core::ERROR_UNAVAILABLE;
+        std::vector<IMetadata::Data::Service> services;
+
+        if (callsign.IsSet() == false) {
+            auto it = _pluginServer->Services().Services();
+
+            while (it.Next() == true) {
+                string info;
+                const string& cs(it.Index());
+
+                if (it.Current().operator->()->Metadata(info) == Core::ERROR_NONE) {
+                    PluginHost::Metadata::Service meta;
+                    meta.FromString(info);
+
+                    if (cs.find(PluginHost::ICompositPlugin::Delimiter) != string::npos) {
+                        meta.Callsign = cs;
+                    }
+
+                    services.push_back(IMetadata::Data::Service(meta));
+                }
+            }
+        }
+        else {
+            PluginHost::IShell* shell = _service->QueryInterfaceByCallsign<PluginHost::IShell>(callsign);
+            if (shell != nullptr) {
+                string info;
+                if (shell->Metadata(info) == Core::ERROR_NONE) {
+                    PluginHost::Metadata::Service meta;
+                    meta.FromString(info);
+                    services.push_back(IMetadata::Data::Service(meta));
+                }
+            }
+            else {
+                result = Core::ERROR_UNKNOWN_KEY;
+            }
+        }
+
+        if (services.empty() == false) {
+            std::sort(services.begin(), services.end(),
+                [](const IMetadata::Data::Service& a, const IMetadata::Data::Service& b) {
+                    return a.Callsign < b.Callsign;
+                });
+
+            using Iterator = IMetadata::Data::IServicesIterator;
+            using IteratorImpl = RPC::IteratorType<Iterator, decltype(services)>;
+
+            outServices = Core::ServiceType<IteratorImpl>::Create<Iterator>(std::move(services));
+            ASSERT(outServices != nullptr);
+            result = Core::ERROR_NONE;
+        }
+        else {
+            outServices = nullptr;
+        }
+
+        return (result);
+    }
+
+    Core::hresult Controller::CallStack(const uint8_t thread, IMetadata::Data::ICallStackIterator*& outCallStack) const
+    {
+        Core::hresult result = Core::ERROR_UNKNOWN_KEY;
+
+        std::list<Core::callstack_info> callStackInfo;
+
+        ASSERT(_pluginServer != nullptr);
+
+        ::DumpCallStack(_pluginServer->WorkerPool().Id(thread), callStackInfo);
+
+        if (callStackInfo.empty() == false) {
+
+            std::vector<IMetadata::Data::CallStack> callstack;
+            callstack.reserve(callStackInfo.size());
+
+            for (const Core::callstack_info& entry : callStackInfo) {
+                IMetadata::Data::CallStack cs;
+                cs.Address = reinterpret_cast<Core::instance_id>(entry.address);
+                cs.Module = entry.module;
+
+                if (entry.function.empty() == false) {
+                    cs.Function = entry.function;
+                }
+
+                if (entry.line != static_cast<uint32_t>(~0)) {
+                    cs.Line = entry.line;
+                }
+
+                callstack.push_back(std::move(cs));
+            }
+
+            using Iterator = IMetadata::Data::ICallStackIterator;
+            using IteratorImpl = RPC::IteratorType<Iterator, decltype(callstack)>;
+
+            outCallStack = Core::ServiceType<IteratorImpl>::Create<Iterator>(std::move(callstack));
+            ASSERT(outCallStack != nullptr);
+
+            result = Core::ERROR_NONE;
+        }
+        else {
+            outCallStack = nullptr;
+        }
+
+        return (result);
+    }
+
+    Core::hresult Controller::Links(IMetadata::Data::ILinksIterator*& outLinks) const
+    {
+        Core::JSON::ArrayType<PluginHost::Metadata::Channel> meta;
+
+        ASSERT(_pluginServer != nullptr);
+
+        _pluginServer->Metadata(meta);
+
+        if (meta.Length() > 0) {
+            std::vector<IMetadata::Data::Link> links;
+            links.reserve(meta.Length());
+            auto it = meta.Elements();
+
+            while (it.Next() == true) {
+                auto const& entry = it.Current();
+
+                IMetadata::Data::Link link;
+                link.Remote = entry.Remote;
+                link.State = entry.State;
+                link.Id = entry.ID;
+                link.Activity = entry.Activity;
+
+                if (entry.Name.Value().empty() == false) {
+                    link.Name = entry.Name;
+                }
+
+                links.push_back(std::move(link));
+            }
+
+            using Iterator = IMetadata::Data::ILinksIterator;
+            using IteratorImpl = RPC::IteratorType<Iterator, decltype(links)>;
+
+            outLinks = Core::ServiceType<IteratorImpl>::Create<Iterator>(std::move(links));
+            ASSERT(outLinks != nullptr);
+        }
+        else {
+            outLinks = nullptr;
+        }
+
+        return (Core::ERROR_NONE);
+    }
+
+    Core::hresult Controller::Proxies(const Core::OptionalType<string>& linkId, IMetadata::Data::IProxiesIterator*& outProxies) const
+    {
+        Core::hresult result = Core::ERROR_UNKNOWN_KEY;
+
+        std::vector<IMetadata::Data::Proxy> collection;
+        bool proxySearch = RPC::Administrator::Instance().Allocations(linkId.IsSet() ? linkId.Value() : EMPTY_STRING, [&collection, &linkId](const string& origin, const std::vector<ProxyStub::UnknownProxy*>& proxies) {
+           for (const auto& proxy : proxies) {
+                IMetadata::Data::Proxy data;
+                data.Count = proxy->ReferenceCount();
+                data.Instance = proxy->Implementation();
+                data.Interface = proxy->InterfaceId();
+                data.Name = proxy->Name();
+                if (linkId.IsSet() == false) {
+                    data.Origin = Core::NumberType<uint32_t>(proxy->ChannelId()).Text() + '@' + origin;
+                }
+                collection.emplace_back(std::move(data));
+           }
+        });
+
+        TRACE(Trace::Information, (_T("Found %d proxies to be listed and the search = [%s]"), collection.size(), proxySearch ? _T("true") : _T("false")));
+
+        if (proxySearch == true) {
+            using Iterator = IMetadata::Data::IProxiesIterator;
+            using IteratorImpl = RPC::IteratorType<Iterator, decltype(collection)>;
+
+            outProxies = Core::ServiceType<IteratorImpl>::Create<Iterator>(std::move(collection));
+            ASSERT(outProxies != nullptr);
+            result = Core::ERROR_NONE;
+        }
+        return (result);
+    }
+
+    Core::hresult Controller::Threads(IMetadata::Data::IThreadsIterator*& outThreads) const
+    {
+        PluginHost::Metadata::Server meta;
+
+        WorkerPoolMetadata(meta);
+
+        if (meta.ThreadPoolRuns.Length() > 0) {
+
+            std::vector<IMetadata::Data::Thread> threads;
+            threads.reserve(meta.ThreadPoolRuns.Length());
+            auto it = meta.ThreadPoolRuns.Elements();
+
+            while (it.Next() == true) {
+                auto const& entry = it.Current();
+                threads.push_back({ PluginHost::Metadata::InstanceId(entry.Id.Value()), entry.Job.Value(), entry.Runs.Value() });
+            }
+
+            using Iterator = IMetadata::Data::IThreadsIterator;
+            using IteratorImpl = RPC::IteratorType<Iterator, decltype(threads)>;
+
+            outThreads = Core::ServiceType<IteratorImpl>::Create<Iterator>(std::move(threads));
+            ASSERT(outThreads != nullptr);
+        }
+        else {
+            outThreads = nullptr;
+        }
+
+        return (Core::ERROR_NONE);
+    }
+
+    Core::hresult Controller::PendingRequests(IMetadata::Data::IPendingRequestsIterator*& outRequests) const
+    {
+        PluginHost::Metadata::Server meta;
+
+        WorkerPoolMetadata(meta);
+
+        if (meta.PendingRequests.Length() > 0) {
+
+            std::vector<string> requests;
+            requests.reserve(meta.PendingRequests.Length());
+            auto it = meta.PendingRequests.Elements();
+
+            while (it.Next() == true) {
+                requests.push_back(it.Current().Value());
+            }
+
+            using Iterator = IMetadata::Data::IPendingRequestsIterator;
+            using IteratorImpl = RPC::IteratorType<Iterator, decltype(requests)>;
+
+            outRequests = Core::ServiceType<IteratorImpl>::Create<Iterator>(std::move(requests));
+            ASSERT(outRequests != nullptr);
+        }
+        else {
+            outRequests = nullptr;
+        }
+
+        return (Core::ERROR_NONE);
+    }
+
+    Core::hresult Controller::Subsystems(ISubsystems::ISubsystemsIterator*& outSubsystems) const
+    {
+        ASSERT(_service != nullptr);
+
+        PluginHost::ISubSystem* subSystem = _service->SubSystems();
+
+        if (subSystem != nullptr) {
+            std::vector<ISubsystems::Subsystem> subsystems;
+            subsystems.reserve(PluginHost::ISubSystem::END_LIST);
+            std::underlying_type<PluginHost::ISubSystem::subsystem>::type i = 0;
+
+            while (i < PluginHost::ISubSystem::END_LIST) {
+
+                const PluginHost::ISubSystem::subsystem subsystem = static_cast<PluginHost::ISubSystem::subsystem>(i);
+                subsystems.push_back({ subsystem, subSystem->IsActive(subsystem)});
+                i++;
+            }
+
+            subSystem->Release();
+
+            using IteratorImpl = RPC::IteratorType<ISubsystems::ISubsystemsIterator, decltype(subsystems)>;
+
+            outSubsystems = Core::ServiceType<IteratorImpl>::Create<ISubsystems::ISubsystemsIterator>(std::move(subsystems));
+            ASSERT(outSubsystems != nullptr);
+        }
+        else {
+            outSubsystems = nullptr;
+        }
+
+        return (Core::ERROR_NONE);
+    }
+
+    Core::hresult Controller::Framework(IMetadata::Data::Version& version) const
+    {
+        PluginHost::Metadata::Version ver;
+
+        _pluginServer->Metadata(ver);
+
+        version.Hash = ver.Hash;
+        version.Major = ver.Major;
+        version.Minor = ver.Minor;
+        version.Patch = ver.Patch;
+
+        return (Core::ERROR_NONE);
+    }
+    void Controller::NotifyStateChange(const string& callsign, const PluginHost::IShell::state& state, const PluginHost::IShell::reason& reason)
+    {
+        ASSERT(callsign.empty() == false);
+
+        _adminLock.Lock();
+
+        for (const auto& entry : _lifeTimeObservers) {
+            if ((entry.second.IsSet() == false) || (entry.second.Value() == callsign)) {
+                entry.first->StateChange(callsign, state, reason);
+            }
+        }
+
+        _adminLock.Unlock();
+
+        // also notify the JSON RPC listeners (if any...)
+
+        // First notify observers that registered for all (notification will include the callsign)
+        Exchange::Controller::JLifeTime::Event::StateChange(*this, {}, callsign, state, reason);
+
+        // ... then the specific observers (notification will not inlcude a callsign)
+        Exchange::Controller::JLifeTime::Event::StateChange(*this, callsign, {}, state, reason);
+    }
+
+    void Controller::NotifyStateControlStateChange(const string& callsign, const Exchange::Controller::ILifeTime::state& state)
+    {
+       ASSERT(callsign.empty() == false);
+
+       _adminLock.Lock();
+
+        for (const auto& entry : _lifeTimeObservers) {
+            if ((entry.second.IsSet() == false) || (entry.second.Value() == callsign)) {
+                entry.first->StateControlStateChange(callsign, state);
+            }
+        }
+
+        _adminLock.Unlock();
+
+        // also notify the JSON RPC listeners (if any)
+        Exchange::Controller::JLifeTime::Event::StateControlStateChange(*this, {}, callsign, state);
+        Exchange::Controller::JLifeTime::Event::StateControlStateChange(*this, callsign, {}, state);
+    }
+
+    void Controller::SendInitialStateSnapshot(const string& client, const Core::OptionalType<string>& callsign)
+    {
+        if (callsign.IsSet() == false) {
+            _adminLock.Lock();
+
+            ASSERT(_pluginServer != nullptr);
+            auto it = _pluginServer->Services().Services();
+
+            while (it.Next() == true) {
+                Core::ProxyType<PluginHost::IShell> service = it.Current();
+
+                if (service->State() == PluginHost::IShell::state::ACTIVATED) {
+                    const string serviceCallsign = service->Callsign();
+
+                    Exchange::Controller::JLifeTime::Event::StateChange(*this, {}, serviceCallsign, service->State(), service->Reason(), client);
+                }
+            }
+
+            _adminLock.Unlock();
+        }
+        else if (callsign.Value().empty() == false) {
+            Core::ProxyType<PluginHost::IShell> service = FromIdentifier(callsign.Value());
+
+            if ((service.IsValid() == true) && (service->State() == PluginHost::IShell::state::ACTIVATED)) {
+                const string serviceCallsign = service->Callsign();
+
+                Exchange::Controller::JLifeTime::Event::StateChange(*this, serviceCallsign, {}, service->State(), service->Reason(), client);
+            }
+        }
+    }
+
+    void Controller::SendInitialStateControlSnapshot(const string& client, const Core::OptionalType<string>& callsign)
+    {
+        if ((callsign.IsSet() == true) && (callsign.Value().empty() == false)) {
+            Core::ProxyType<PluginHost::IShell> service = FromIdentifier(callsign.Value());
+
+            if (service.IsValid() == true) {
+                PluginHost::IStateControl* control = service->QueryInterface<PluginHost::IStateControl>();
+
+                if (control != nullptr) {
+                    const Exchange::Controller::ILifeTime::state ltState = ToLifeTimeState(control->State());
+                    Exchange::Controller::JLifeTime::Event::StateControlStateChange(*this, service->Callsign(), {}, ltState, client);
+                    control->Release();
+                }
+            }
+        }
+    }
+
+    Core::hresult Controller::BuildInfo(IMetadata::Data::BuildInfo& buildInfo) const
+    {   
+        #if defined(__WINDOWS__)
+            buildInfo.SystemType = IMetadata::Data::BuildInfo::SYSTEM_WINDOWS;
+        #elif defined(__LINUX__)
+            buildInfo.SystemType = IMetadata::Data::BuildInfo::SYSTEM_LINUX;
+        #elif defined(__APPLE__)
+            buildInfo.SystemType = IMetadata::Data::BuildInfo::SYSTEM_MACOS;
+        #else
+            #error No system type detected
+        #endif
+
+        #if defined(__DEBUG__)
+            #if defined(_THUNDER_DEBUG_OPTIMIZED_)
+                buildInfo.BuildType = IMetadata::Data::BuildInfo::DEBUG_OPTIMIZED;
+            #else
+                buildInfo.BuildType = IMetadata::Data::BuildInfo::DEBUG;
+            #endif
+        #else // !__DEBUG__
+            #if defined(_THUNDER_NDEBUG_DEB_INFO)
+                buildInfo.BuildType = IMetadata::Data::BuildInfo::RELEASE_WITH_DEBUG_INFO;
+            #elif defined(_THUNDER_PRODUCTION)
+                buildInfo.BuildType = IMetadata::Data::BuildInfo::PRODUCTION;
+            #else
+                buildInfo.BuildType = IMetadata::Data::BuildInfo::RELEASE;
+            #endif
+        #endif
+
+        #ifdef _TRACE_LEVEL
+            buildInfo.TraceLevel = _TRACE_LEVEL;
+        #endif
+
+        uint8_t extensions = 0;
+        #ifdef __CORE_WARNING_REPORTING__
+            extensions |= IMetadata::Data::BuildInfo::WARNING_REPORTING;
+        #endif
+        #ifdef __CORE_BLUETOOTH_SUPPORT__
+            extensions |= IMetadata::Data::BuildInfo::BLUETOOTH;
+        #endif
+        #ifdef HIBERNATE_SUPPORT_ENABLED
+            extensions |= IMetadata::Data::BuildInfo::HIBERNATE;
+        #endif
+        #ifdef PROCESSCONTAINERS_ENABLED
+            extensions |= IMetadata::Data::BuildInfo::PROCESS_CONTAINERS;
+        #endif
+        
+        // coverity[DEADCODE] - extensions is set via #ifdef blocks above. If no optional
+        // features are enabled the guard is dead in that build configuration, but it is
+        // intentionally defensive for all other configurations.
+        if (extensions != 0) {
+            buildInfo.Extensions = static_cast<IMetadata::Data::BuildInfo::extensiontype>(extensions);
+        }
+
+        #ifdef __CORE_MESSAGING__
+            buildInfo.Messaging = true;
+        #else
+            buildInfo.Messaging= false;
+        #endif
+
+        #ifdef __CORE_EXCEPTION_CATCHING__
+            buildInfo.ExceptionCatching = true;
+        #else
+            buildInfo.ExceptionCatching = false;
+        #endif
+
+        buildInfo.InstanceIDBits = (sizeof(Core::instance_id) * 8);
+       
+        #ifdef __CORE_CRITICAL_SECTION_LOG__
+            buildInfo.DeadlockDetection = true;
+        #else
+            buildInfo.DeadlockDetection = false;
+        #endif
+     
+        #ifdef __CORE_NO_WCHAR_SUPPORT__
+            buildInfo.WCharSupport = false;
+        #else
+            buildInfo.WCharSupport = true;
+        #endif
+
+        ASSERT(_pluginServer != nullptr);
+
+        buildInfo.ThreadPoolCount = _pluginServer->Configuration().ThreadPoolCount();
+
+        buildInfo.COMRPCTimeOut = RPC::CommunicationTimeOut;
+
+        return (Core::ERROR_NONE);
+    }
+}
+}
