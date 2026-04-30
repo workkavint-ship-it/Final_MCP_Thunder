@@ -1,0 +1,699 @@
+# Thunder Plugin Development Rules - Comprehensive YAML Schema
+# Version: 1.0.0
+# Generated from: 10-plugin-development.md series (10, 10.1-10.7)
+
+metadata:
+  version: "1.0.0"
+  description: "Thunder plugin development standards and review checklist"
+  source: "ThunderTools/PluginQA/rules/*.md"
+  last_updated: "2026-04-30"
+
+# ============================================================================
+# Phase 1: Module Structure (10.1)
+# ============================================================================
+phases:
+  - id: "phase_1"
+    name: "Module Structure"
+    rule_file: "10.1-plugin-module.md"
+    apply_to: 
+      - "**/Module.cpp"
+      - "**/Module.h"
+    description: "MODULE_NAME definition, include order, and module file structure"
+    
+    checks:
+      - id: "module_1_1"
+        name: "Module.h first include"
+        severity: "violation"
+        description: "Module.h must be the FIRST include in every .cpp file"
+        rationale: "Ensures MODULE_NAME and core macros are consistently defined before plugin headers"
+        files: ["**/*.cpp"]
+        pattern: "#include \"Module.h\""
+        verification:
+          - "Read first #include directive in each .cpp file"
+          - "Verify it is Module.h, not plugin header"
+          - "Check all .cpp files in plugin directory"
+        
+      - id: "module_1_2"
+        name: "MODULE_NAME with Plugin_ prefix"
+        severity: "violation"
+        description: "MODULE_NAME must be defined with Plugin_ prefix"
+        rationale: "Thunder runtime uses this to uniquely identify plugins"
+        files: ["**/Module.h"]
+        pattern: "#define MODULE_NAME Plugin_"
+        correct_example: |
+          #ifndef MODULE_NAME
+          #define MODULE_NAME Plugin_NetworkControl
+          #endif
+        
+      - id: "module_1_3"
+        name: "MODULE_NAME_DECLARATION present"
+        severity: "violation"
+        description: "Module.cpp must contain MODULE_NAME_DECLARATION"
+        rationale: "Registers the module name with Thunder framework"
+        files: ["**/Module.cpp"]
+        pattern: "MODULE_NAME_DECLARATION\\(BUILD_REFERENCE\\)"
+        correct_example: |
+          #include "Module.h"
+          
+          MODULE_NAME_DECLARATION(BUILD_REFERENCE)
+        
+      - id: "module_1_4"
+        name: "#pragma once in Module.h"
+        severity: "suggestion"
+        description: "Use #pragma once instead of legacy header guards"
+        rationale: "Aligns with current Thunder style"
+        files: ["**/Module.h"]
+        pattern: "#pragma once"
+
+# ============================================================================
+# Phase 2: Code Style & Basics (10.2)
+# ============================================================================
+  - id: "phase_2"
+    name: "Code Style & Basics"
+    rule_file: "10.2-plugin-codestyle.md"
+    apply_to:
+      - "**/*.cpp"
+      - "**/*.h"
+      - "**/CMakeLists.txt"
+    description: "Copyright, formatting, naming, error handling, general C++ rules"
+    
+    checks:
+      - id: "style_2_1"
+        name: "Copyright headers present"
+        severity: "violation"
+        description: "Every file must have Apache 2.0 copyright header"
+        rationale: "Legal compliance and attribution"
+        files: ["**/*.cpp", "**/*.h", "**/CMakeLists.txt"]
+        pattern: "Licensed under the Apache License"
+        
+      - id: "style_2_2"
+        name: "Thunder types used"
+        severity: "warning"
+        description: "Use Thunder types (uint8_t, uint16_t, uint32_t, string) not STL"
+        rationale: "Consistency across Thunder codebase"
+        files: ["**/*.cpp", "**/*.h"]
+        incorrect_patterns: ["std::string", "unsigned int", "unsigned long"]
+        
+      - id: "style_2_3"
+        name: "VARIABLE_IS_NOT_USED accuracy"
+        severity: "violation"
+        description: "VARIABLE_IS_NOT_USED only on actually unused parameters"
+        rationale: "Incorrect usage suppresses compiler warnings inappropriately"
+        files: ["**/*.cpp"]
+        verification:
+          - "Find all VARIABLE_IS_NOT_USED annotations"
+          - "Read function body to check if parameter is actually used"
+          - "Flag if parameter IS used but marked as unused"
+        correct_example: |
+          void Deinitialize(PluginHost::IShell* service VARIABLE_IS_NOT_USED)
+          {
+              // service is truly not used in this function body
+          }
+        incorrect_example: |
+          void Initialize(PluginHost::IShell* service VARIABLE_IS_NOT_USED)
+          {
+              service->ConfigLine(); // ❌ Parameter IS used!
+          }
+        
+      - id: "style_2_4"
+        name: "Error codes preserved"
+        severity: "violation"
+        description: "Error codes must not be unconditionally overwritten"
+        rationale: "Breaks error contract - callers get wrong status"
+        files: ["**/*.cpp"]
+        verification:
+          - "Find functions returning Core::hresult or uint32_t error codes"
+          - "Check if error variable is set conditionally but then unconditionally overwritten"
+          - "Common pattern: result = ERROR_UNKNOWN_KEY, then later result = ERROR_NONE always"
+        incorrect_example: |
+          Core::hresult Get(string& value) {
+              Core::hresult result = Core::ERROR_UNKNOWN_KEY;
+              if (found) {
+                  result = Core::ERROR_NONE;
+              }
+              result = Core::ERROR_NONE; // ❌ Overwrites proper error!
+              return result;
+          }
+        
+      - id: "style_2_5"
+        name: "ASSERT used correctly"
+        severity: "warning"
+        description: "Use ASSERT for preconditions, not error handling"
+        rationale: "ASSERT is debug-only; production needs proper error codes"
+        files: ["**/*.cpp"]
+        
+      - id: "style_2_6"
+        name: "nullptr vs NULL"
+        severity: "warning"
+        description: "Use nullptr instead of NULL in modern C++"
+        rationale: "Type safety and consistency"
+        files: ["**/*.cpp", "**/*.h"]
+        pattern: "nullptr"
+        incorrect_pattern: "NULL"
+        
+      - id: "style_2_7"
+        name: "No exceptions"
+        severity: "violation"
+        description: "Thunder plugins must not throw or catch exceptions"
+        rationale: "Thunder uses error codes, not exceptions"
+        files: ["**/*.cpp"]
+        forbidden_patterns: ["throw ", "try {", "catch ("]
+
+# ============================================================================
+# Phase 3: Class Registration (10.3)
+# ============================================================================
+  - id: "phase_3"
+    name: "Class Registration"
+    rule_file: "10.3-plugin-class-registration.md"
+    apply_to:
+      - "**/*.cpp"
+      - "**/*.h"
+    description: "IPlugin class structure, interface map, metadata registration"
+    
+    checks:
+      - id: "registration_3_1"
+        name: "Metadata registration present"
+        severity: "violation"
+        description: "Plugin must register metadata via Plugin::Metadata<> or SERVICE_REGISTRATION"
+        rationale: "Framework needs version and subsystem information"
+        files: ["**/*.cpp"]
+        patterns: 
+          - "Plugin::Metadata<"
+          - "SERVICE_REGISTRATION("
+        
+      - id: "registration_3_2"
+        name: "Interface map complete"
+        severity: "violation"
+        description: "BEGIN_INTERFACE_MAP must include IPlugin and all implemented interfaces"
+        rationale: "COM QueryInterface relies on this map"
+        files: ["**/*.h"]
+        required_entries: ["PluginHost::IPlugin"]
+        
+      - id: "registration_3_3"
+        name: "Copy/move constructors deleted"
+        severity: "violation"
+        description: "Plugin class must delete copy ctor, copy assignment, move ctor, move assignment"
+        rationale: "Plugins are non-copyable/non-movable by design"
+        files: ["**/*.h"]
+        required_deletions:
+          - "ClassName(const ClassName&) = delete"
+          - "ClassName& operator=(const ClassName&) = delete"
+          - "ClassName(ClassName&&) = delete"
+          - "ClassName& operator=(ClassName&&) = delete"
+        verification:
+          - "Find plugin class declaration"
+          - "Verify all four special members are deleted"
+          - "Flag if only copy is deleted but not move"
+
+# ============================================================================
+# Phase 4: Lifecycle Management (10.4)
+# ============================================================================
+  - id: "phase_4"
+    name: "Lifecycle Management"
+    rule_file: "10.4-plugin-lifecycle.md"
+    apply_to:
+      - "**/*.cpp"
+      - "**/*.h"
+    description: "Initialize, Deinitialize, constructor/destructor rules"
+    
+    checks:
+      - id: "lifecycle_4_1"
+        name: "ASSERT service pointer"
+        severity: "violation"
+        description: "Initialize must start with ASSERT(service != nullptr)"
+        rationale: "Validates precondition before initialization logic"
+        files: ["**/*.cpp"]
+        pattern: "ASSERT\\(service != nullptr\\)"
+        location: "First line of Initialize() body"
+        
+      - id: "lifecycle_4_2"
+        name: "IShell AddRef if stored"
+        severity: "violation"
+        description: "If IShell* stored as member, must call AddRef()"
+        rationale: "COM reference counting - prevents dangling pointer"
+        files: ["**/*.cpp"]
+        applies_to: "Only if _service or similar member exists"
+        verification:
+          - "Check if plugin stores IShell* as member"
+          - "If yes, verify AddRef() called after assignment"
+          - "If no (only used in Initialize/Deinitialize), no AddRef needed"
+        conditional: true
+        
+      - id: "lifecycle_4_3"
+        name: "No constructor logic"
+        severity: "violation"
+        description: "Constructors must only zero-initialize members"
+        rationale: "WorkerPool not ready yet, framework not initialized"
+        files: ["**/*.cpp"]
+        
+      - id: "lifecycle_4_4"
+        name: "No destructor logic"
+        severity: "violation"
+        description: "Destructors must be = default or empty"
+        rationale: "Cleanup belongs in Deinitialize, not destructor"
+        files: ["**/*.cpp", "**/*.h"]
+        
+      - id: "lifecycle_4_5"
+        name: "Register before OOP instantiation"
+        severity: "violation"
+        description: "Register notification sinks BEFORE calling Root<T>()"
+        rationale: "Ensures disconnect events are never missed"
+        files: ["**/*.cpp"]
+        applies_to: "OOP plugins only"
+        
+      - id: "lifecycle_4_6"
+        name: "State cleared in Deinitialize"
+        severity: "violation"
+        description: "Deinitialize must reset all members to default state"
+        rationale: "Plugin may be reactivated; old state must not persist"
+        files: ["**/*.cpp"]
+        common_members: ["_connectionId = 0", "_service = nullptr", "_observers.clear()"]
+        
+      - id: "lifecycle_4_7"
+        name: "Observers released in Deinitialize"
+        severity: "violation"
+        description: "All registered observers must be Release()'d and cleared"
+        rationale: "Prevents reference leaks"
+        files: ["**/*.cpp"]
+        verification:
+          - "Find Register() methods that call observer->AddRef()"
+          - "Verify Deinitialize() calls observer->Release() for all"
+          - "Verify observer container is .clear()'d"
+        
+      - id: "lifecycle_4_8"
+        name: "Reverse-order cleanup"
+        severity: "warning"
+        description: "Deinitialize should release resources in reverse order of acquisition"
+        rationale: "Prevents dependency issues during teardown"
+        files: ["**/*.cpp"]
+
+# ============================================================================
+# Phase 5: Implementation Patterns (10.5)
+# ============================================================================
+  - id: "phase_5"
+    name: "Implementation Patterns"
+    rule_file: "10.5-plugin-implementation.md"
+    apply_to:
+      - "**/*Implementation.cpp"
+      - "**/*Implementation.h"
+      - "**/*.cpp"
+      - "**/*.h"
+    description: "JSON-RPC, notifications, config, thread safety, memory management"
+    
+    checks:
+      - id: "implementation_5_1"
+        name: "JSON-RPC registration in Initialize"
+        severity: "violation"
+        description: "JSON-RPC stubs must be registered in Initialize, not constructor"
+        rationale: "Plugin not fully initialized in constructor"
+        files: ["**/*.cpp"]
+        applies_to: "Plugins with JSON-RPC support"
+        pattern: "Exchange::J.*::Register\\("
+        location: "Initialize() method"
+        
+      - id: "implementation_5_2"
+        name: "JSON-RPC unregistration in Deinitialize"
+        severity: "violation"
+        description: "Every JSON-RPC Register must have matching Unregister in Deinitialize"
+        rationale: "Prevents method collision on reactivation"
+        files: ["**/*.cpp"]
+        verification:
+          - "Count Register calls in Initialize"
+          - "Count Unregister calls in Deinitialize"
+          - "Verify counts match and names match"
+        
+      - id: "implementation_5_3"
+        name: "Config NOT stored as member"
+        severity: "violation"
+        description: "Config must be stack-local in Initialize, not a member variable"
+        rationale: "Config only needed during initialization; storing increases lifetime unnecessarily"
+        files: ["**/*.h"]
+        incorrect_pattern: "Config _config;"
+        correct_example: |
+          // In Initialize():
+          Config config;
+          config.FromString(service->ConfigLine());
+          _storagePath = config.Storage.Value();
+        
+      - id: "implementation_5_4"
+        name: "Thread safety - lock usage"
+        severity: "violation"
+        description: "Shared state must be protected with _adminLock"
+        rationale: "Prevents race conditions"
+        files: ["**/*.cpp", "**/*.h"]
+        common_members: ["Core::CriticalSection _adminLock"]
+        
+      - id: "implementation_5_5"
+        name: "No callbacks while holding lock"
+        severity: "violation"
+        description: "Must not call external callbacks/notifications while holding _adminLock"
+        rationale: "Can deadlock or cause unexpected re-entry"
+        files: ["**/*.cpp"]
+        verification:
+          - "Find _adminLock.Lock() ... _adminLock.Unlock() blocks"
+          - "Check for observer callbacks, JSON-RPC events, or plugin method calls inside"
+          - "Flag if external call made before unlock"
+        incorrect_example: |
+          _adminLock.Lock();
+          DoWork();
+          NotifyObservers(); // ❌ External callback under lock!
+          _adminLock.Unlock();
+        correct_example: |
+          bool shouldNotify = false;
+          _adminLock.Lock();
+          DoWork();
+          shouldNotify = true;
+          _adminLock.Unlock();
+          if (shouldNotify) {
+              NotifyObservers(); // ✅ Called after unlock
+          }
+        
+      - id: "implementation_5_6"
+        name: "Observers accessed under lock"
+        severity: "violation"
+        description: "Observer containers must be accessed under lock"
+        rationale: "Prevents iterator invalidation and race conditions"
+        files: ["**/*.cpp"]
+        
+      - id: "implementation_5_7"
+        name: "AddRef/Release paired"
+        severity: "violation"
+        description: "Every AddRef() must have matching Release()"
+        rationale: "COM reference counting - prevents leaks"
+        files: ["**/*.cpp"]
+        verification:
+          - "Find AddRef() calls"
+          - "Verify corresponding Release() in cleanup path"
+          - "Check Deinitialize releases all stored interface pointers"
+        
+      - id: "implementation_5_8"
+        name: "Notification sink pattern"
+        severity: "warning"
+        description: "Use Core::SinkType<Notification> for event subscriptions"
+        rationale: "Correct lifetime management for notification objects"
+        files: ["**/*.h"]
+        pattern: "Core::SinkType<"
+
+# ============================================================================
+# Phase 6: Configuration Files (10.6)
+# ============================================================================
+  - id: "phase_6"
+    name: "Configuration Files"
+    rule_file: "10.6-plugin-config.md"
+    apply_to:
+      - "**/*.config"
+      - "**/*.conf.in"
+    description: "Plugin config file structure and required fields"
+    applies_to: "Plugins with configuration files only"
+    conditional: true
+    
+    checks:
+      - id: "config_6_1"
+        name: "startmode present"
+        severity: "warning"
+        description: ".conf.in must define startmode"
+        rationale: "Controls plugin activation behavior"
+        files: ["**/*.conf.in"]
+        pattern: "startmode = "
+        values: ["Activated", "Deactivated", "Unavailable"]
+        
+      - id: "config_6_2"
+        name: "configuration object structure"
+        severity: "warning"
+        description: "Plugin-specific settings must be inside configuration object"
+        rationale: "Root-level fields are framework-reserved"
+        files: ["**/*.conf.in"]
+        pattern: "configuration = JSON()"
+
+# ============================================================================
+# Phase 7: Build System (10.7)
+# ============================================================================
+  - id: "phase_7"
+    name: "Build System"
+    rule_file: "10.7-plugin-cmake.md"
+    apply_to:
+      - "**/CMakeLists.txt"
+    description: "CMake structure, ordering, namespace usage"
+    
+    checks:
+      - id: "cmake_7_1"
+        name: "cmake_minimum_required FIRST"
+        severity: "violation"
+        description: "cmake_minimum_required must be first statement"
+        rationale: "Sets CMake policies before anything else"
+        files: ["**/CMakeLists.txt"]
+        pattern: "cmake_minimum_required\\(VERSION"
+        verification:
+          - "Read first non-comment line of CMakeLists.txt"
+          - "Verify it is cmake_minimum_required"
+          - "Flag if project() or other commands come first"
+        
+      - id: "cmake_7_2"
+        name: "${NAMESPACE} usage"
+        severity: "violation"
+        description: "Use ${NAMESPACE} not hardcoded WPEFramework/Thunder"
+        rationale: "Ensures smooth framework upgrades"
+        files: ["**/CMakeLists.txt"]
+        correct_patterns: 
+          - "${NAMESPACE}Plugins"
+          - "${NAMESPACE}Definitions"
+        incorrect_patterns:
+          - "WPEFrameworkPlugins"
+          - "ThunderPlugins (hardcoded)"
+        
+      - id: "cmake_7_3"
+        name: "CXX_STANDARD explicit"
+        severity: "violation"
+        description: "Must explicitly set CXX_STANDARD 11"
+        rationale: "Ensures consistent C++ standard"
+        files: ["**/CMakeLists.txt"]
+        pattern: "CXX_STANDARD 11"
+        incorrect_pattern: "CXX_STANDARD ${CXX_STD}"
+        
+      - id: "cmake_7_4"
+        name: "write_config() last"
+        severity: "warning"
+        description: "write_config() should be last statement"
+        rationale: "Ensures all variables are defined"
+        files: ["**/CMakeLists.txt"]
+
+# ============================================================================
+# Common Mistakes Reference Table
+# ============================================================================
+common_mistakes:
+  - mistake: "Storing IShell* without AddRef()"
+    consequence: "Dangling pointer"
+    fix: "Always AddRef() when storing IShell*"
+    phase: "phase_4"
+    check_id: "lifecycle_4_2"
+    
+  - mistake: "Not unregistering JSON-RPC in Deinitialize"
+    consequence: "Method collision on reactivation"
+    fix: "Unregister every method by matching name"
+    phase: "phase_5"
+    check_id: "implementation_5_2"
+    
+  - mistake: "Calling callbacks while holding _adminLock"
+    consequence: "Deadlock"
+    fix: "Release lock before calling external code"
+    phase: "phase_5"
+    check_id: "implementation_5_5"
+    
+  - mistake: "Config stored as member"
+    consequence: "Unnecessary lifetime extension"
+    fix: "Use stack-local Config in Initialize"
+    phase: "phase_5"
+    check_id: "implementation_5_3"
+    
+  - mistake: "VARIABLE_IS_NOT_USED on used parameter"
+    consequence: "Misleading code, suppresses valid warnings"
+    fix: "Remove macro if parameter is actually used"
+    phase: "phase_2"
+    check_id: "style_2_3"
+    
+  - mistake: "Unconditional ERROR_NONE overwrites proper error"
+    consequence: "Callers get wrong status"
+    fix: "Only set ERROR_NONE when operation actually succeeds"
+    phase: "phase_2"
+    check_id: "style_2_4"
+    
+  - mistake: "Module.h not first include"
+    consequence: "MODULE_NAME and macros not defined consistently"
+    fix: "Make Module.h the first #include in every .cpp"
+    phase: "phase_1"
+    check_id: "module_1_1"
+    
+  - mistake: "cmake_minimum_required not first"
+    consequence: "CMake policies set incorrectly"
+    fix: "Move cmake_minimum_required to first line"
+    phase: "phase_7"
+    check_id: "cmake_7_1"
+    
+  - mistake: "Missing move constructor/assignment deletion"
+    consequence: "Incomplete object semantics"
+    fix: "Delete all four: copy ctor/assign, move ctor/assign"
+    phase: "phase_3"
+    check_id: "registration_3_3"
+    
+  - mistake: "Observers not released in Deinitialize"
+    consequence: "Reference leaks"
+    fix: "Call Release() on all observers and clear container"
+    phase: "phase_4"
+    check_id: "lifecycle_4_7"
+
+# ============================================================================
+# Architecture Detection Patterns
+# ============================================================================
+architecture_patterns:
+  in_process:
+    indicators:
+      - "Single plugin class"
+      - "No separate *Implementation class"
+      - "No Root<T>() call"
+      - "No _connectionId member"
+    implications:
+      - "No OOP-specific lifecycle checks needed"
+      - "No Deactivated() method required"
+      - "No remote connection handling"
+      
+  out_of_process:
+    indicators:
+      - "Separate *Implementation class"
+      - "Root<T>() call in Initialize"
+      - "_connectionId member"
+      - "Deactivated() method"
+    implications:
+      - "Must register notification sink BEFORE Root<T>()"
+      - "Must implement Deactivated() with connection ID check"
+      - "Must terminate connection in Deinitialize"
+      
+  json_rpc_enabled:
+    indicators:
+      - "Inherits from PluginHost::JSONRPC"
+      - "Includes <interfaces/json/J*.h>"
+      - "Exchange::J*::Register() call"
+    implications:
+      - "Must register stubs in Initialize"
+      - "Must unregister stubs in Deinitialize"
+      - "Count must match (Register ↔ Unregister)"
+      
+  has_configuration:
+    indicators:
+      - "Config class defined"
+      - "ConfigLine() call"
+      - ".conf.in file exists"
+    implications:
+      - "Config must be stack-local, not member"
+      - "Phase 6 checks apply"
+      
+  stores_ishell:
+    indicators:
+      - "_service member"
+      - "_shell member"
+      - "IShell* stored beyond Initialize/Deinitialize"
+    implications:
+      - "Must call AddRef() after storing"
+      - "Must call Release() in Deinitialize"
+      - "Must set to nullptr after Release"
+
+# ============================================================================
+# Verification Logic Templates
+# ============================================================================
+verification_templates:
+  variable_is_not_used:
+    steps:
+      - "Find parameter marked with VARIABLE_IS_NOT_USED"
+      - "Read entire function body"
+      - "Search for parameter name usage"
+      - "If found ANY usage, flag violation"
+      - "If truly unused, check is OK"
+    confidence: "high"
+    
+  error_code_overwrite:
+    steps:
+      - "Find function returning Core::hresult or uint32_t"
+      - "Find result variable initialization"
+      - "Check for conditional assignment (if/else setting error)"
+      - "Look for unconditional assignment after conditional"
+      - "If unconditional assignment found, flag violation"
+    confidence: "high"
+    
+  callback_under_lock:
+    steps:
+      - "Find _adminLock.Lock() ... _adminLock.Unlock() blocks"
+      - "Parse code between Lock and Unlock"
+      - "Look for: observer calls, JSON-RPC Event::, plugin method calls"
+      - "If external call found, flag violation"
+      - "Verify pattern: Lock → prepare data → Unlock → callback"
+    confidence: "medium"
+    false_positive_risk: "Check for local method calls vs external callbacks"
+    
+  ishell_storage:
+    steps:
+      - "Search for _service, _shell, or similar IShell* member"
+      - "If not found, storage check passes (not applicable)"
+      - "If found, locate assignment in Initialize"
+      - "Check for AddRef() call immediately after assignment"
+      - "Check for Release() in Deinitialize"
+      - "If stored but no AddRef, flag violation"
+    conditional: true
+    confidence: "high"
+
+# ============================================================================
+# Rule Citation Map (Topic → Rule File)
+# ============================================================================
+rule_citation_map:
+  "Module.h include order": "10.1-plugin-module.md"
+  "MODULE_NAME definition": "10.1-plugin-module.md"
+  "MODULE_NAME_DECLARATION": "10.1-plugin-module.md"
+  "Copyright headers": "10.2-plugin-codestyle.md"
+  "Code formatting": "10.2-plugin-codestyle.md"
+  "Naming conventions": "10.2-plugin-codestyle.md"
+  "Error handling": "10.2-plugin-codestyle.md"
+  "VARIABLE_IS_NOT_USED": "10.2-plugin-codestyle.md"
+  "nullptr vs NULL": "10.2-plugin-codestyle.md"
+  "No exceptions": "10.2-plugin-codestyle.md"
+  "Interface map": "10.3-plugin-class-registration.md"
+  "Copy/move deletion": "10.3-plugin-class-registration.md"
+  "Metadata registration": "10.3-plugin-class-registration.md"
+  "Initialize": "10.4-plugin-lifecycle.md"
+  "Deinitialize": "10.4-plugin-lifecycle.md"
+  "IShell AddRef/Release": "10.4-plugin-lifecycle.md"
+  "Constructor/destructor": "10.4-plugin-lifecycle.md"
+  "State clearing": "10.4-plugin-lifecycle.md"
+  "JSON-RPC registration": "10.5-plugin-implementation.md"
+  "Config class": "10.5-plugin-implementation.md"
+  "Thread safety": "10.5-plugin-implementation.md"
+  "Callback under lock": "10.5-plugin-implementation.md"
+  "Memory management": "10.5-plugin-implementation.md"
+  "Notification pattern": "10.5-plugin-implementation.md"
+  "Observer lifetime": "10.5-plugin-implementation.md"
+  "Config file structure": "10.6-plugin-config.md"
+  "startmode": "10.6-plugin-config.md"
+  "CMake structure": "10.7-plugin-cmake.md"
+  "cmake_minimum_required ordering": "10.7-plugin-cmake.md"
+  "NAMESPACE usage": "10.7-plugin-cmake.md"
+  "CXX_STANDARD": "10.7-plugin-cmake.md"
+
+# ============================================================================
+# Checklist Summary
+# ============================================================================
+checklist_summary:
+  total_phases: 7
+  total_checks: 36
+  mandatory_checks: 28
+  conditional_checks: 8
+  
+  phase_breakdown:
+    phase_1: 4  # Module structure
+    phase_2: 7  # Code style
+    phase_3: 3  # Registration
+    phase_4: 8  # Lifecycle
+    phase_5: 8  # Implementation (some conditional)
+    phase_6: 2  # Config (conditional)
+    phase_7: 4  # CMake
+    
+  severity_counts:
+    violations: 25
+    warnings: 8
+    suggestions: 3

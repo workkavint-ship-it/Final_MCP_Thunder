@@ -15,11 +15,15 @@ This tool provides automated plugin quality checks for ThunderNanoServices plugi
 PluginQA/
 ├── README.md                    # This file
 ├── prompts/                     # VS Code Copilot prompt files
-│   ├── thunder-review.prompt.md
+│   ├── thunder-review.prompt.md           # Comprehensive review (36+ checks)
+│   ├── thunder-checkpoint-review.prompt.md # Bounded query validation (17 checks)
 │   ├── thunder-generate.prompt.md
 │   ├── thunder-pattern.prompt.md
 │   └── thunder-interface.prompt.md
 ├── rules/                       # Plugin review rules
+│   ├── README.md                # Rules documentation
+│   ├── thunder-plugin-rules.yaml # ⭐ Comprehensive YAML (36+ checks)
+│   ├── thunder-plugin-rules-checkpoints.yaml # ⭐ Bounded query YAML (17 checks)
 │   ├── 10-plugin-development.md
 │   ├── 10.1-plugin-module.md
 │   ├── 10.2-plugin-codestyle.md
@@ -64,13 +68,61 @@ Add this to your VS Code `settings.json`:
 
 Once configured, use these commands in VS Code Copilot Chat:
 
-### `/thunder-review`
-Review a plugin against Thunder development rules.
+### `/thunder-review` - Comprehensive Plugin Review
+Full systematic review covering 36+ checks across 7 phases.
 
 **Usage:**
 - Open a plugin file (`.cpp` or `.h`)
 - Type `/thunder-review` in Copilot Chat
-- Get detailed feedback on rule violations and suggestions
+- Get comprehensive validation report
+
+**Output:**
+- Architecture analysis (IP/OOP, JSON-RPC, config detection)
+- 7-phase checklist results
+- Violations with line numbers, explanations, and fixes
+- Warnings and suggestions
+
+**Best for:** Complete plugin validation, compliance checking, pre-commit review
+
+---
+
+### `/thunder-checkpoint-review` - Bounded Query Validation
+Focused checkpoint-based review using bounded AI queries for precise, verifiable validation.
+
+**Usage:**
+- Same as `/thunder-review`
+- Get checkpoint-by-checkpoint verification
+
+**Methodology:**
+- **Bounded queries**: Each checkpoint = 1 code block + 1 yes/no question
+- **17 focused checks** (key violations only)
+- **Verifiable**: Every finding cites exact line from extracted code
+- **Actionable**: Targeted fixes for specific blocks
+
+**Example:**
+```
+Checkpoint 4.1: Initialize ASSERT
+Extract: Initialize() body (lines 108-125)
+Question: "Is first statement 'ASSERT(service != nullptr);'?"
+Answer: No
+Citation: [Dictionary.cpp:108] Missing ASSERT
+Fix: Add ASSERT(service != nullptr); as first line
+```
+
+**Best for:** Precise verification, debugging specific issues, learning Thunder rules
+
+---
+
+### Comparison
+
+| Aspect | Comprehensive | Checkpoint |
+|--------|---------------|------------|
+| Checks | 36+ | 17 focused |
+| Approach | Whole-file | Bounded extraction |
+| Output | Full report | Per-checkpoint |
+| Speed | Thorough | Faster |
+
+---
 
 ### `/thunder-generate`
 Generate a new plugin skeleton using PluginSkeletonGenerator.
@@ -98,7 +150,17 @@ Validate COM interface definitions.
 
 ## Rules Reference
 
-The tool validates plugins against these rule categories:
+The tool validates plugins against Thunder development standards available in **two formats**:
+
+### YAML Format (Machine-Readable)
+- **thunder-plugin-rules.yaml** - Comprehensive, structured rule set with:
+  - 7 review phases with 36+ checks
+  - Architecture detection patterns
+  - Verification templates
+  - Common mistakes mappings
+  - Rule citation guide
+
+### Markdown Format (Human-Readable)
 
 | Rule File | Focus Area |
 |-----------|------------|
@@ -111,18 +173,34 @@ The tool validates plugins against these rule categories:
 | `10.6-plugin-config.md` | Plugin configuration file format |
 | `10.7-plugin-cmake.md` | CMake build integration |
 
+**Both formats contain the same rules** - YAML is used by the review tool, Markdown is for human reference.
+
+See [rules/README.md](rules/README.md) for detailed YAML structure documentation.
+
 ## Development
 
 ### Adding New Rules
 
-1. Create a new markdown file in `rules/`
-2. Include frontmatter with `applyTo` glob pattern:
+When adding or updating rules:
+
+1. **Update Markdown files** in `rules/` for human readability:
+   - Include frontmatter with `applyTo` glob pattern
+   - Document rules with examples
    ```yaml
    ---
    applyTo: '**/*.cpp'
    ---
    ```
-3. Document the rules with examples
+
+2. **Update YAML file** (`thunder-plugin-rules.yaml`) for tool consistency:
+   - Add check to appropriate phase
+   - Include verification steps
+   - Update common_mistakes if applicable
+   - Increment metadata.version
+
+3. **Test changes**:
+   - Run `/thunder-review` on sample plugins
+   - Verify accuracy and no false positives
 
 ### Customizing Prompts
 

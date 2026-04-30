@@ -42,19 +42,28 @@ Thunder is a modular plugin framework used in RDK (Reference Design Kit). Plugin
 
 ## Rules Location
 
-All plugin review rules are located in: `ThunderTools/PluginQA/rules/`
+**YAML Rules File (Primary Reference)**: `ThunderTools/PluginQA/rules/thunder-plugin-rules.yaml`
 
-**Complete rule set (load ALL of these first):**
-- `10-plugin-development.md` - Overall checklist, best practices, common mistakes table
-- `10.1-plugin-module.md` - Module.h/Module.cpp requirements (MODULE_NAME, includes)
-- `10.2-plugin-codestyle.md` - Code style, copyright headers, naming conventions, Thunder types, **ERROR HANDLING**
-- `10.3-plugin-class-registration.md` - IPlugin class, Metadata<>, interface maps, SERVICE_REGISTRATION
-- `10.4-plugin-lifecycle.md` - Initialize/Deinitialize, AddRef/Release, lifecycle rules, no constructor logic
-- `10.5-plugin-implementation.md` - JSON-RPC patterns, OOP vs IP patterns, notifications, threading, memory management, config parsing
-- `10.6-plugin-config.md` - Configuration file format (.conf.in), root fields
-- `10.7-plugin-cmake.md` - Build system integration (CMakeLists.txt), ${NAMESPACE} usage
+This comprehensive YAML file consolidates all Thunder plugin development rules into a single, machine-readable format containing:
 
-**CRITICAL: Rule Citation Guide** - Always cite the correct rule for each topic:
+**7 Review Phases** (covering original rules 10-10.7):
+- **Phase 1** - Module Structure: MODULE_NAME, Module.h first include, MODULE_NAME_DECLARATION
+- **Phase 2** - Code Style & Basics: Copyright, VARIABLE_IS_NOT_USED, error handling, nullptr vs NULL
+- **Phase 3** - Class Registration: Interface map, metadata, copy/move deletion
+- **Phase 4** - Lifecycle Management: Initialize/Deinitialize, IShell AddRef/Release, state clearing, observer cleanup
+- **Phase 5** - Implementation Patterns: JSON-RPC, Config (must be stack-local!), thread safety, no callbacks under lock
+- **Phase 6** - Configuration Files: .conf.in structure, startmode
+- **Phase 7** - Build System: cmake_minimum_required first, ${NAMESPACE}, CXX_STANDARD explicit
+
+**YAML Structure Includes:**
+- 36+ specific checklist items with verification steps
+- Architecture detection patterns (IP/OOP, JSON-RPC, config)
+- Common mistakes table (10 entries) with phase/check mappings
+- Rule citation map for correct rule file references
+- Verification logic templates with false positive guidance
+- Conditional check indicators (e.g., IShell storage only if member exists)
+
+**CRITICAL: Rule Citation Guide** - The YAML `rule_citation_map` section maps topics to correct rule files:
 
 | Topic | Correct Rule to Cite |
 |-------|---------------------|
@@ -81,10 +90,10 @@ All plugin review rules are located in: `ThunderTools/PluginQA/rules/`
 - **AddRef/Release only needed if stored** - don't recommend AddRef if plugin correctly doesn't store IShell*
 
 **Approach**: 
-1. **Load all 8 rules first** - read every file completely
-2. **Understand the complete rule set** - build mental model
-3. **Then analyze the plugin** - determine architecture
-4. **Apply only applicable rules** - based on plugin's actual implementation
+1. **Load the YAML rules file** - read thunder-plugin-rules.yaml completely
+2. **Understand the complete rule set** - parse all 7 phases, checks, verification templates
+3. **Then analyze the plugin** - determine architecture using patterns from YAML
+4. **Apply only applicable rules** - use conditional flags and architecture patterns from YAML
 
 **Why this matters:** You can't determine which rules apply until you understand:
 - Is this plugin in-process or out-of-process?
@@ -98,18 +107,28 @@ You need the complete rule context first to make these determinations intelligen
 
 1. **Identify the plugin files**: Ask the user which plugin they want reviewed, or use the currently open file in the editor.
 
-2. **Read the actual file**: Use the read_file tool to read the ENTIRE file you're reviewing. This is CRITICAL for getting accurate line numbers.
+2. **Load the YAML rules file**: Read `ThunderTools/PluginQA/rules/thunder-plugin-rules.yaml` completely to understand:
+   - All 7 phases and their checks
+   - Architecture detection patterns
+   - Verification templates
+   - Common mistakes and their mappings
+   - Rule citation map
 
-3. **Load relevant rules**: Read the appropriate rule files from `ThunderTools/PluginQA/rules/` based on the file type:
-   - For `Module.h` or `Module.cpp`: Read `10.1-plugin-module.md`
-   - For plugin class files: Read `10.3-plugin-class-registration.md` and `10.4-plugin-lifecycle.md`
-   - For `CMakeLists.txt`: Read `10.7-plugin-cmake.md`
-   - For `.conf.in` files: Read `10.6-plugin-config.md`
-   - Always check `10.2-plugin-codestyle.md` for any C++ file
+3. **Determine plugin architecture** using patterns from YAML `architecture_patterns` section:
+   - In-process (IP) vs Out-of-process (OOP)
+   - JSON-RPC enabled vs plain COM
+   - Has configuration vs no config
+   - Stores IShell* vs only uses in Initialize/Deinitialize
 
-4. **Analyze the code**: Review the plugin code against the loaded rules. Reference the actual file content you read.
+4. **Read plugin files completely**: Use read_file to read ENTIRE files for accurate line numbers:
+   - Plugin.cpp, Plugin.h
+   - Module.h, Module.cpp  
+   - CMakeLists.txt
+   - *.conf.in (if exists)
 
-5. **Report findings**: Structure your response as:
+5. **Apply mandatory checklist**: Go through each phase systematically using YAML checklist structure
+
+6. **Report findings**: Structure your response as:
 
    ### 🔴 Violations (Must Fix)
    Critical issues that violate Thunder requirements
@@ -157,8 +176,18 @@ You need the complete rule context first to make these determinations intelligen
 - Plugin: DeviceInfo
 - Architecture: Out-of-process (OOP) - has separate DeviceInfoImplementation class
 - Features: JSON-RPC enabled, Configuration parsing, IWeb interface
-- Rules checked: 10, 10.1, 10.2, 10.3, 10.4, 10.5 (JSON-RPC, OOP, Config sections)
-- Found: 2 violations, 1 warning, 0 suggestions
+- Files checked: DeviceInfo.cpp, DeviceInfo.h, Module.h, Module.cpp
+
+**Mandatory Checklist Results:**
+Phase 1 (Module): ✓ 4/4 passed
+Phase 2 (Style): ✓ 6/7 passed, ✗ VARIABLE_IS_NOT_USED on line 88
+Phase 3 (Registration): ✓ 3/3 passed
+Phase 4 (Lifecycle): ✓ 5/8 passed, ✗ No AddRef (line 88), state not cleared (line 120)
+Phase 5 (Implementation): ✓ 4/6 passed, ✗ Config stored as member, callback under lock
+Phase 6 (Config): ✓ 2/2 passed
+Phase 7 (CMake): ✓ 4/4 passed
+
+**Total**: Found 2 violations, 1 warning, 0 suggestions
 
 ---
 
@@ -167,6 +196,8 @@ You need the complete rule context first to make these determinations intelligen
 **[DeviceInfo.cpp:88]** IShell service pointer stored without AddRef()
 
 **Rule**: 10.4-plugin-lifecycle.md - IShell Lifetime Management
+
+**Checklist**: Phase 4 - Lifecycle - "IShell* AddRef() if stored as member?"
 
 **Why this is wrong**: Thunder uses COM reference counting. When you store an interface pointer (like IShell*), you must call AddRef() to increment the reference count. Without it, the object may be destroyed while you still have a pointer to it, causing crashes or undefined behavior. This is critical in OOP plugins where the process boundary makes lifetime management even more important.
 
@@ -230,6 +261,8 @@ void DeviceInfo::Deinitialize(PluginHost::IShell* service) {
 
 **Rule**: 10.2-plugin-codestyle.md - Error Handling
 
+**Checklist**: Phase 2 - Code Style - "Error codes preserved and not overwritten?"
+
 **Why this is wrong**: Interface methods must return Core::hresult error codes correctly. This Get() method sets result = Core::ERROR_UNKNOWN_KEY when a key is not found (line 159), but then unconditionally overwrites it with Core::ERROR_NONE on line 183. This breaks the error contract - callers will think the operation succeeded when the key doesn't exist, leading to incorrect behavior.
 
 **Current code** (lines 180-185):
@@ -259,6 +292,8 @@ void DeviceInfo::Deinitialize(PluginHost::IShell* service) {
 **[Dictionary.cpp:113]** VARIABLE_IS_NOT_USED incorrectly applied
 
 **Rule**: 10.2-plugin-codestyle.md - General Rules
+
+**Checklist**: Phase 2 - Code Style - "VARIABLE_IS_NOT_USED only on actually unused parameters?"
 
 **Why this is wrong**: The service parameter is marked with VARIABLE_IS_NOT_USED macro but it IS actually used on lines 115 and 117 (service->ConfigLine() and service->PersistentPath()). This macro should only be applied to parameters that are truly unused. Incorrect usage suppresses compiler warnings inappropriately and misleads code readers.
 
@@ -326,8 +361,18 @@ const string Initialize(PluginHost::IShell* service) override {
 
 ## Important Notes
 
-- **Load ALL rules first**: Read all 8 rule files before analyzing any code. This gives you complete context.
-- **Use the Rule Citation Guide**: Always cite the CORRECT rule using the table above. Common mistakes:
+- **Load YAML rules first**: Read thunder-plugin-rules.yaml before analyzing any code. This gives you complete context.
+- **Use the MANDATORY CHECKLIST**: Go through EVERY item in the Phase 1-7 checklist systematically. Do not skip items.
+- **Document checklist results**: Show which phases passed/failed in your summary.
+- **🔍 VERIFY BEFORE REPORTING (Critical)**: Don't flag something just because it looks wrong:
+  1. Read surrounding code for full context
+  2. Understand WHY the code is written this way
+  3. Check if plugin architecture justifies the pattern
+  4. Confirm the rule actually applies to this plugin type
+  5. Ask: "Is this ACTUALLY wrong, or am I missing something?"
+  6. **Only report after logical verification**
+  7. **False positives damage trust - be certain before flagging**
+- **Use the Rule Citation Map**: Always cite the CORRECT rule using the `rule_citation_map` section from YAML. Common mistakes:
   - ❌ Citing 10.5 for error handling → ✅ Should cite 10.2 - Error Handling
   - ❌ Citing 10.4 for thread safety → ✅ Should cite 10.5 - Thread Safety
   - ❌ Citing 10.5 for copyright headers → ✅ Should cite 10.2 - Code Style
@@ -344,7 +389,13 @@ const string Initialize(PluginHost::IShell* service) override {
 - **ALWAYS read the file first**: Use read_file to get actual content and line numbers.
 - **Be PRECISE with line numbers**: Reference exact lines from the file you read. Verify line numbers match actual code.
 - **Quote actual code**: Show real code character-for-character from the exact line.
-- **Verify before reporting**: Double-check each violation against actual code. Don't report violations that don't exist.
+- **Think, then report**: Every violation should pass these checks:
+  * ✅ I read the actual code
+  * ✅ I understand the context
+  * ✅ I verified the rule applies to this plugin type
+  * ✅ I confirmed there's no valid architectural reason for this
+  * ✅ I can explain WHY this is wrong in Thunder framework terms
+  * ✅ I'm certain this is a genuine violation, not a false positive
 - **Explain contextually**: Show you understand WHY the rule matters for THIS plugin's architecture.
 - **Provide complete fixes**: Working code with all necessary changes, considering the plugin's architecture.
 - **Include context in fixes**: Show surrounding code so user knows where to make changes.
@@ -426,32 +477,95 @@ When the user invokes `/thunder-review`:
    
    - State: "Applicable rules for this plugin: 10, 10.1, 10.2, 10.3, 10.4, 10.5 (JSON-RPC), 10.6 (Config)"
 
-6. **Analyze systematically against applicable rules**
-   - Go through the file section by section
-   - Apply the checklist from the applicable rules you identified:
+6. **Analyze systematically using mandatory checklist**
    
-   **Always check (10, 10.1, 10.2, 10.3, 10.4):**
-     * **10 Overall**: Following plugin development checklist? Common mistakes from table?
-     * **10.1 Module**: MODULE_NAME has Plugin_ prefix? Module.h is first include? MODULE_NAME_DECLARATION in Module.cpp?
-     * **10.2 Code style**: Copyright header complete? Thunder types (string not std::string)? PascalCase naming? No exceptions? **VARIABLE_IS_NOT_USED correctly applied?**
-     * **10.3 Registration**: Plugin::Metadata<> or SERVICE_REGISTRATION? BEGIN_INTERFACE_MAP complete? All interfaces listed?
-     * **10.4 Lifecycle**: **If IShell* stored in member variable**: AddRef() when storing? Release() in Deinitialize()? **Don't flag as violation if not stored and only used in Initialize/Deinitialize!** No logic in constructor/destructor?
+   **MANDATORY: Check EVERY item below and document your findings**
    
-   **Check if applicable based on architecture:**
-     * **10.5 Implementation (if JSON-RPC)**: RegisterAll() in Initialize()? UnregisterAll() in Deinitialize()? No blocking in handlers? Thread-safe with CriticalSection?
-     * **10.5 Implementation (if OOP)**: Proper split library? IUnknown exchange? RPC communication setup?
-     * **10.5 Implementation (if IP)**: Single class pattern? Direct interface implementation?
-     * **10.5 Implementation (if notifications)**: Sink registration? Thread-safe notification delivery?
-     * **10.5 Implementation (if threading)**: Proper WorkerPool usage? No blocking operations?
-     * **10.6 Config (if config parsing)**: Config class declared? FromString() implemented? root->Get<Config>()?
-     * **10.7 CMake (if CMakeLists.txt)**: ${NAMESPACE} usage? Proper dependencies?
+   **Phase 1: Module Structure (10.1)**
+   - [ ] **Module.h is FIRST include** in all .cpp files? (Not second, not via another header)
+   - [ ] MODULE_NAME defined with Plugin_ prefix?
+   - [ ] MODULE_NAME_DECLARATION present in Module.cpp?
+   - [ ] #pragma once used (not #ifndef guards)?
    
-   - For each potential issue:
-     * Note the EXACT line number
-     * Identify which rule(s) it violates
-     * Understand WHY based on your rule reading and the plugin architecture
+   **Phase 2: Code Style & Basics (10.2)**
+   - [ ] **Copyright header** present in all source files?
+   - [ ] **Thunder types** used? (string not std::string, Core::ERROR_* not int)
+   - [ ] **VARIABLE_IS_NOT_USED** only on actually unused parameters?
+   - [ ] **Error codes** preserved and not overwritten?
+   - [ ] **ASSERT** used for preconditions where appropriate?
+   - [ ] **nullptr** used instead of NULL in modern code?
+   - [ ] No C++ exceptions used?
+   
+   **Phase 3: Class Registration (10.3)**
+   - [ ] Plugin::Metadata<> or SERVICE_REGISTRATION present?
+   - [ ] **BEGIN_INTERFACE_MAP** includes ALL interfaces the class implements?
+   - [ ] **Copy/move constructors/operators** properly deleted?
+   
+   **Phase 4: Lifecycle Management (10.4)**
+   - [ ] **ASSERT(service != nullptr)** at start of Initialize()?
+   - [ ] **IShell* AddRef()** if stored as member? (Skip if not stored)
+   - [ ] **IShell* Release()** in Deinitialize() if stored?
+   - [ ] **No logic in constructor/destructor** (only member initialization)?
+   - [ ] All registrations in Initialize(), not constructor?
+   - [ ] All cleanup in Deinitialize(), not destructor?
+   - [ ] **State cleared** on Deinitialize() (maps, lists, observers)?
+   - [ ] **Observers/sinks released** with Release() before clearing?
+   
+   **Phase 5: Implementation Patterns (10.5)**
+   
+   *If JSON-RPC:*
+   - [ ] RegisterAll() called in Initialize()?
+   - [ ] UnregisterAll() called in Deinitialize()?
+   
+   *If Configuration:*
+   - [ ] **Config NOT stored as member** (use stack-local in Initialize)?
+   - [ ] Config values extracted and stored individually?
+   - [ ] FromString(service->ConfigLine()) called correctly?
+   
+   *Thread Safety:*
+   - [ ] **CriticalSection** used for shared mutable state?
+   - [ ] **No callbacks/notifications while holding lock**? (Deadlock risk!)
+   - [ ] **_observers accessed under lock**?
+   - [ ] Lock released before calling external code?
+   
+   *Memory Management:*
+   - [ ] AddRef/Release paired correctly?
+   - [ ] No raw delete on COM interfaces?
+   
+   **Phase 6: Configuration Files (10.6 - if .conf.in present)**
+   - [ ] Root-level startmode present?
+   - [ ] configuration object properly structured?
+   
+   **Phase 7: Build System (10.7 - if CMakeLists.txt present)**
+   - [ ] **cmake_minimum_required FIRST statement**?
+   - [ ] ${NAMESPACE} used for plugin targets?
+   - [ ] CXX_STANDARD set explicitly?
+   - [ ] Dependencies listed correctly?
+   
+   **For each failed check:**
+   - Note the EXACT line number where violation occurs
+   - **VERIFY before flagging**: Read surrounding code for context
+   - **Ask yourself**:
+     * Is this ACTUALLY wrong, or is there a valid reason?
+     * Does the plugin architecture justify this pattern?
+     * Am I applying the right rule for this plugin type (IP/OOP)?
+     * Is there context I'm missing that makes this correct?
+   - **Only report if truly a violation** after verification
+   - Identify which specific rule it violates
+   - Understand WHY based on your rule reading and the plugin architecture
+   - Prepare the fix with actual code
+   
+   **Examples of logical verification:**
+   - ✅ IShell* not stored → Check: Does plugin need it beyond Initialize/Deinitialize? NO → **Not a violation**
+   - ✅ VARIABLE_IS_NOT_USED on parameter → Check: Is parameter actually used? YES → **Violation**
+   - ✅ Config stored as member → Check: Does rule 10.5 require stack-local? YES → **Violation**
+   - ✅ Callback while holding lock → Check: Is lock held? YES. Can this deadlock? YES → **Violation**
+   
+   **Document your checklist results:**
+   - List which checks passed ✓
+   - List which checks failed with line numbers ✗
+   - **Show your verification reasoning** for critical violations
    - Check both what's present AND what's missing
-   - Consider the plugin's architecture when evaluating patterns
 
 7. **Prepare findings with rule context**
    - Group by severity: Violations → Warnings → Suggestions
@@ -472,14 +586,25 @@ When the user invokes `/thunder-review`:
      - Plugin: Dictionary
      - Architecture: [In-process/Out-of-process]
      - Features: [JSON-RPC, Configuration, etc.]
-     - Rules checked: 10, 10.1, 10.2, 10.3, 10.4, 10.5 (applicable sections)
-     - Found: X violations, Y warnings, Z suggestions"
+     - Files checked: [list all files reviewed]
+     
+     **Mandatory Checklist Results:**
+     Phase 1 (Module): ✓ 3/4 passed, ✗ Module.h not first include
+     Phase 2 (Style): ✓ 5/7 passed, ✗ VARIABLE_IS_NOT_USED misused (2), error overwrite (1)
+     Phase 3 (Registration): ✓ 2/3 passed, ✗ Move constructors not deleted
+     Phase 4 (Lifecycle): ✓ 4/8 passed, ✗ ASSERT missing, state not cleared
+     Phase 5 (Implementation): ✓ 3/6 passed, ✗ Config stored, callback under lock
+     Phase 6 (Config): ✓ 2/2 passed
+     Phase 7 (CMake): ✓ 2/4 passed, ✗ cmake_minimum_required ordering
+     
+     **Total**: Found X violations, Y warnings, Z suggestions"
    
    - Then present findings using the structured format
    - Include line numbers in EVERY finding
    - Explain WHY each rule matters in context of this plugin's architecture
    - Show complete, working fixes
    - For each violation, demonstrate understanding of both rule and architecture
+   - **Reference which checklist item(s) failed for each violation**
 
 9. **Offer follow-up**
    - Ask if user wants other plugin files reviewed (Module.h, .conf.in, etc.)

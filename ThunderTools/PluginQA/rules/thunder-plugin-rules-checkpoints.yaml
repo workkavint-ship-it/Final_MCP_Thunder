@@ -1,0 +1,956 @@
+# Thunder Plugin Development Rules - Checkpoint-Based Validation
+# Version: 2.0.0
+# Approach: Bounded AI queries with specific yes/no questions and code extraction
+
+metadata:
+  version: "2.0.0"
+  description: "Checkpoint-based Thunder plugin validation with bounded queries"
+  approach: "Extract specific code blocks, ask targeted questions, verify with logic"
+  source: "ThunderTools/PluginQA/rules/*.md"
+  last_updated: "2026-04-30"
+
+# ============================================================================
+# CHECKPOINT VALIDATION FRAMEWORK
+# ============================================================================
+# Each checkpoint:
+# 1. Extracts a specific code block (function, class declaration, etc.)
+# 2. Asks a bounded yes/no question
+# 3. Applies logical verification
+# 4. Cites exact line if violation found
+# 5. Provides specific fix for that code block only
+
+validation_approach:
+  principles:
+    - "Bounded queries: Single code block + specific question"
+    - "Verifiable: Every finding must cite exact line"
+    - "Logical: Apply reasoning before flagging"
+    - "Actionable: Provide concrete fix for extracted block"
+    - "Isolated: Each check independent of others"
+    
+  workflow:
+    - step: "Extract code block"
+      example: "Extract Initialize() method body"
+    - step: "Ask specific question"
+      example: "Does first line contain ASSERT(service != nullptr)?"
+    - step: "Apply logical verification"
+      example: "Check if service pointer is used - if yes, ASSERT required"
+    - step: "Cite line if violation"
+      example: "Line 108: Missing ASSERT"
+    - step: "Provide targeted fix"
+      example: "Add ASSERT(service != nullptr); as first line"
+
+# ============================================================================
+# PHASE 1: MODULE STRUCTURE CHECKPOINTS
+# ============================================================================
+phase_1_checkpoints:
+  phase_id: "module_structure"
+  phase_name: "Module Structure"
+  rule_file: "10.1-plugin-module.md"
+  
+  checkpoints:
+    - checkpoint_id: "module_1_1"
+      name: "Module.h is first include"
+      severity: "violation"
+      
+      extraction:
+        target: "Each .cpp file in plugin directory"
+        method: "Read first non-comment, non-blank lines until first #include"
+        code_block: "First #include directive"
+        
+      bounded_query:
+        question: "Is the first #include directive '#include \"Module.h\"'?"
+        expected_answer: "Yes"
+        
+      verification_logic:
+        - "Extract first #include from .cpp file"
+        - "Compare text exactly: should be '#include \"Module.h\"'"
+        - "If different, extract actual first include"
+        - "Cite line number of wrong include"
+        
+      violation_pattern:
+        condition: "First #include is NOT Module.h"
+        example_wrong: "#include \"Dictionary.h\"  // Line 20"
+        
+      fix_template:
+        action: "Move Module.h include before current first include"
+        code: |
+          // BEFORE:
+          #include "Dictionary.h"
+          
+          // AFTER:
+          #include "Module.h"
+          #include "Dictionary.h"
+          
+      citation:
+        line_format: "[filename:LINE] First include is {ACTUAL}, should be Module.h"
+        rule: "10.1-plugin-module.md - Module.h Structure"
+        
+    - checkpoint_id: "module_1_2"
+      name: "MODULE_NAME has Plugin_ prefix"
+      severity: "violation"
+      
+      extraction:
+        target: "Module.h"
+        method: "Grep for '#define MODULE_NAME'"
+        code_block: "#define MODULE_NAME Plugin_*"
+        
+      bounded_query:
+        question: "Does MODULE_NAME definition start with 'Plugin_'?"
+        expected_answer: "Yes"
+        
+      verification_logic:
+        - "Find #define MODULE_NAME in Module.h"
+        - "Extract the defined name (third token)"
+        - "Check if name starts with 'Plugin_'"
+        - "If not, cite line and show actual name"
+        
+      violation_pattern:
+        condition: "MODULE_NAME does not start with Plugin_"
+        example_wrong: "#define MODULE_NAME Dictionary  // Missing Plugin_ prefix"
+        
+      fix_template:
+        action: "Add Plugin_ prefix to MODULE_NAME"
+        code: |
+          // BEFORE:
+          #define MODULE_NAME Dictionary
+          
+          // AFTER:
+          #define MODULE_NAME Plugin_Dictionary
+          
+    - checkpoint_id: "module_1_3"
+      name: "MODULE_NAME_DECLARATION in Module.cpp"
+      severity: "violation"
+      
+      extraction:
+        target: "Module.cpp"
+        method: "Read entire file, search for MODULE_NAME_DECLARATION"
+        code_block: "MODULE_NAME_DECLARATION(BUILD_REFERENCE)"
+        
+      bounded_query:
+        question: "Does Module.cpp contain 'MODULE_NAME_DECLARATION(BUILD_REFERENCE)'?"
+        expected_answer: "Yes"
+        
+      verification_logic:
+        - "Read Module.cpp completely"
+        - "Search for exact text 'MODULE_NAME_DECLARATION'"
+        - "If not found, flag violation"
+        - "If found, verify it's at top level (not in function/class)"
+        
+      violation_pattern:
+        condition: "MODULE_NAME_DECLARATION not present or not at top level"
+        
+      fix_template:
+        action: "Add MODULE_NAME_DECLARATION after includes"
+        code: |
+          #include "Module.h"
+          
+          MODULE_NAME_DECLARATION(BUILD_REFERENCE)
+
+# ============================================================================
+# PHASE 2: CODE STYLE CHECKPOINTS
+# ============================================================================
+phase_2_checkpoints:
+  phase_id: "code_style"
+  phase_name: "Code Style & Basics"
+  rule_file: "10.2-plugin-codestyle.md"
+  
+  checkpoints:
+    - checkpoint_id: "style_2_3"
+      name: "VARIABLE_IS_NOT_USED accuracy"
+      severity: "violation"
+      
+      extraction:
+        target: "Each function with VARIABLE_IS_NOT_USED parameter"
+        method: "Find 'VARIABLE_IS_NOT_USED' annotation, extract entire function body"
+        code_block: "Function signature + complete body"
+        
+      bounded_query:
+        question: "Is the parameter marked VARIABLE_IS_NOT_USED actually used in the function body?"
+        expected_answer: "No (if Yes, it's a violation)"
+        
+      verification_logic:
+        - "Extract parameter name from signature"
+        - "Search function body for parameter name usage"
+        - "Count occurrences (excluding signature line)"
+        - "If count > 0, parameter IS used → violation"
+        - "Cite first usage line"
+        
+      violation_pattern:
+        condition: "Parameter marked unused but IS used in body"
+        example_wrong: |
+          void Initialize(IShell* service VARIABLE_IS_NOT_USED) {
+              service->ConfigLine();  // ❌ Used! Line 115
+          }
+          
+      fix_template:
+        action: "Remove VARIABLE_IS_NOT_USED macro"
+        code: |
+          // BEFORE:
+          void Initialize(IShell* service VARIABLE_IS_NOT_USED)
+          
+          // AFTER:
+          void Initialize(IShell* service)
+          
+      citation:
+        line_format: "[filename:LINE] Parameter marked unused but used on line {USAGE_LINE}"
+        rule: "10.2-plugin-codestyle.md - General Rules"
+        
+    - checkpoint_id: "style_2_4"
+      name: "Error codes not overwritten"
+      severity: "violation"
+      
+      extraction:
+        target: "Functions returning Core::hresult or uint32_t error codes"
+        method: "Extract complete function body"
+        code_block: "Function with error code return"
+        
+      bounded_query:
+        question: "Does this function set an error code conditionally but then unconditionally overwrite it?"
+        expected_answer: "No"
+        
+      verification_logic:
+        - "Find result/error variable initialization"
+        - "Find conditional assignments (if/else setting different errors)"
+        - "Search for unconditional assignment AFTER conditional"
+        - "If found, check if it overwrites potential error"
+        - "Cite line of unconditional assignment"
+        
+      violation_pattern:
+        condition: "Unconditional ERROR_NONE after conditional error setting"
+        example_wrong: |
+          Core::hresult Get(string& value) {
+              Core::hresult result = ERROR_UNKNOWN_KEY;
+              if (found) {
+                  result = ERROR_NONE;
+              }
+              result = ERROR_NONE;  // ❌ Line 183: Overwrites proper error!
+              return result;
+          }
+          
+      fix_template:
+        action: "Remove unconditional success assignment"
+        code: |
+          // BEFORE:
+          result = ERROR_NONE;  // Remove this
+          
+          // AFTER:
+          // Keep previously computed result
+          
+      citation:
+        line_format: "[filename:LINE] Unconditional ERROR_NONE overwrites proper error"
+        rule: "10.2-plugin-codestyle.md - Error Handling"
+        
+    - checkpoint_id: "style_2_6"
+      name: "nullptr vs NULL"
+      severity: "warning"
+      
+      extraction:
+        target: "All pointer initializations and comparisons"
+        method: "Grep for '= NULL' and '== NULL'"
+        code_block: "Lines containing NULL"
+        
+      bounded_query:
+        question: "Is nullptr used instead of NULL?"
+        expected_answer: "Yes"
+        
+      verification_logic:
+        - "Search all .cpp/.h files for 'NULL'"
+        - "For each occurrence, extract line"
+        - "Check if it's pointer-related"
+        - "Cite each line with NULL usage"
+        
+      violation_pattern:
+        condition: "NULL used instead of nullptr"
+        example_wrong: "std::list<Entry>* ptr = NULL;"
+        
+      fix_template:
+        action: "Replace NULL with nullptr"
+        code: "nullptr"
+
+# ============================================================================
+# PHASE 3: CLASS REGISTRATION CHECKPOINTS
+# ============================================================================
+phase_3_checkpoints:
+  phase_id: "class_registration"
+  phase_name: "Class Registration"
+  rule_file: "10.3-plugin-class-registration.md"
+  
+  checkpoints:
+    - checkpoint_id: "registration_3_3"
+      name: "All special members deleted"
+      severity: "violation"
+      
+      extraction:
+        target: "Plugin class declaration in .h file"
+        method: "Extract from 'class PluginName' to first 'private:' or method"
+        code_block: "Plugin class public section with special members"
+        
+      bounded_query:
+        question: "Are all four special members (copy ctor, copy assign, move ctor, move assign) explicitly deleted?"
+        expected_answer: "Yes"
+        
+      verification_logic:
+        - "Extract plugin class declaration"
+        - "Search for: 'PluginName(const PluginName&) = delete;'"
+        - "Search for: 'PluginName& operator=(const PluginName&) = delete;'"
+        - "Search for: 'PluginName(PluginName&&) = delete;'"
+        - "Search for: 'PluginName& operator=(PluginName&&) = delete;'"
+        - "Count matches (should be 4)"
+        - "If < 4, cite line of class declaration and list missing deletions"
+        
+      violation_pattern:
+        condition: "Less than 4 special members deleted"
+        example_wrong: |
+          class Dictionary {
+              Dictionary(const Dictionary&) = delete;
+              Dictionary& operator=(const Dictionary&) = delete;
+              // ❌ Missing move constructor and move assignment
+          };
+          
+      fix_template:
+        action: "Add missing deleted special members"
+        code: |
+          Dictionary(const Dictionary&) = delete;
+          Dictionary& operator=(const Dictionary&) = delete;
+          Dictionary(Dictionary&&) = delete;              // Add this
+          Dictionary& operator=(Dictionary&&) = delete;   // Add this
+          
+      citation:
+        line_format: "[filename:LINE] Missing deleted special members: {LIST}"
+        rule: "10.3-plugin-class-registration.md - Interface Implementation"
+        
+    - checkpoint_id: "registration_3_2"
+      name: "Interface map includes IPlugin"
+      severity: "violation"
+      
+      extraction:
+        target: "BEGIN_INTERFACE_MAP...END_INTERFACE_MAP block"
+        method: "Extract complete interface map"
+        code_block: "Full interface map"
+        
+      bounded_query:
+        question: "Does BEGIN_INTERFACE_MAP include an INTERFACE_ENTRY for IPlugin (either 'IPlugin' or 'PluginHost::IPlugin')?"
+        expected_answer: "Yes"
+        
+      verification_logic:
+        - "Find BEGIN_INTERFACE_MAP block"
+        - "Search for 'INTERFACE_ENTRY(PluginHost::IPlugin)' OR 'INTERFACE_ENTRY(IPlugin)'"
+        - "Accept either qualified or unqualified name"
+        - "If neither found, cite line of BEGIN_INTERFACE_MAP"
+        
+      violation_pattern:
+        condition: "IPlugin not in interface map (neither qualified nor unqualified)"
+        
+      fix_template:
+        action: "Add IPlugin entry"
+        code: "INTERFACE_ENTRY(PluginHost::IPlugin)  // or INTERFACE_ENTRY(IPlugin) if in scope"
+
+# ============================================================================
+# PHASE 4: LIFECYCLE CHECKPOINTS
+# ============================================================================
+phase_4_checkpoints:
+  phase_id: "lifecycle"
+  phase_name: "Lifecycle Management"
+  rule_file: "10.4-plugin-lifecycle.md"
+  
+  checkpoints:
+    - checkpoint_id: "lifecycle_4_1"
+      name: "Initialize starts with ASSERT"
+      severity: "violation"
+      
+      extraction:
+        target: "Initialize() method"
+        method: "Extract from 'Initialize(PluginHost::IShell* service)' to first '}'"
+        code_block: "Complete Initialize() body"
+        
+      bounded_query:
+        question: "Does Initialize() start with 'ASSERT(service != nullptr);' followed by 'ASSERT(_service == nullptr);' (if plugin stores _service)?"
+        expected_answer: "Yes (both if _service member exists, first only if not stored)"
+        
+      verification_logic:
+        - "Extract Initialize() body"
+        - "Skip opening brace"
+        - "Get first non-comment, non-blank statement"
+        - "Check if it matches 'ASSERT(service != nullptr);'"
+        - "If plugin stores _service member: Check second statement is 'ASSERT(_service == nullptr);'"
+        - "If not, cite line where Initialize starts"
+        
+      violation_pattern:
+        condition: "Missing ASSERT(service != nullptr) or ASSERT(_service == nullptr)"
+        example_wrong: |
+          const string Initialize(IShell* service) {
+              _config.FromString(service->ConfigLine());  // ❌ Missing ASSERTs
+          }
+          
+      fix_template:
+        action: "Add ASSERT preconditions at start"
+        code: |
+          const string Initialize(IShell* service) {
+              ASSERT(service != nullptr);   // Parameter valid
+              ASSERT(_service == nullptr);  // Not already initialized
+              // rest of initialization...
+          }
+          
+      citation:
+        line_format: "[filename:LINE] Initialize missing ASSERT(service != nullptr) at start"
+        rule: "10.4-plugin-lifecycle.md - Initialization"
+        
+    - checkpoint_id: "lifecycle_4_2"
+      name: "IShell stored with AddRef"
+      severity: "violation"
+      conditional: true
+      
+      extraction:
+        target: "Plugin class .h file and Initialize() method"
+        method: "1) Check if IShell* member exists, 2) Extract Initialize() body"
+        code_block: "Member declaration + Initialize() body"
+        
+      bounded_query:
+        question: "If plugin stores IShell* as member, does Initialize() call AddRef() after assignment?"
+        expected_answer: "Yes (if member exists)"
+        
+      verification_logic:
+        - "Search class for 'IShell* _service' or similar member"
+        - "If NOT found: Skip check (not applicable)"
+        - "If found: Extract Initialize() body"
+        - "Search for assignment: '_service = service' or similar"
+        - "Search for AddRef() call within 5 lines after assignment"
+        - "If assignment found but no AddRef: Violation"
+        - "Cite line of assignment"
+        
+      violation_pattern:
+        condition: "IShell* stored but AddRef() not called"
+        example_wrong: |
+          _service = service;  // Line 120
+          // ❌ Missing: _service->AddRef();
+          
+      fix_template:
+        action: "Add AddRef() in Initialize and Release() in Deinitialize"
+        code: |
+          // Initialize:
+          _service = service;
+          _service->AddRef();
+          
+          // Deinitialize:
+          if (_service != nullptr) {
+              _service->Release();
+              _service = nullptr;
+          }
+          
+      citation:
+        line_format: "[filename:LINE] IShell* stored without AddRef()"
+        rule: "10.4-plugin-lifecycle.md - IShell Lifetime Management"
+        
+    - checkpoint_id: "lifecycle_4_3"
+      name: "Deinitialize verifies service parameter"
+      severity: "violation"
+      conditional: true
+      
+      extraction:
+        target: "Deinitialize() method"
+        method: "Extract from 'Deinitialize(PluginHost::IShell* service)' to first '}'"
+        code_block: "Complete Deinitialize() body"
+        
+      bounded_query:
+        question: "If plugin stores _service, does Deinitialize() assert 'ASSERT(_service == service);' before cleanup?"
+        expected_answer: "Yes (if _service member exists)"
+        
+      verification_logic:
+        - "Search class for 'IShell* _service' or similar member"
+        - "If NOT found: Skip check (not applicable)"
+        - "If found: Extract Deinitialize() body"
+        - "Search for 'ASSERT(_service == service)' within first 10 lines"
+        - "If not found: Violation"
+        - "Cite line where Deinitialize starts"
+        
+      violation_pattern:
+        condition: "IShell* stored but no ASSERT(_service == service) in Deinitialize"
+        example_wrong: |
+          void Deinitialize(IShell* service) {
+              // ❌ Missing: ASSERT(_service == service);
+              _service->Release();
+          }
+          
+      fix_template:
+        action: "Add ASSERT to verify symmetric Initialize/Deinitialize calls"
+        code: |
+          void Deinitialize(IShell* service) {
+              if (_service != nullptr) {
+                  ASSERT(_service == service);  // Verify same service
+                  _service->Release();
+                  _service = nullptr;
+              }
+          }
+          
+      citation:
+        line_format: "[filename:LINE] Deinitialize missing ASSERT(_service == service)"
+        rule: "10.4-plugin-lifecycle.md - Deinitialize Symmetry"
+        
+    - checkpoint_id: "lifecycle_4_7"
+      name: "Deinitialize releases observers"
+      severity: "violation"
+      conditional: true
+      
+      extraction:
+        target: "Plugin class .h + Deinitialize() method"
+        method: "1) Check for observer container member, 2) Extract Deinitialize() body"
+        code_block: "Observer container + Deinitialize() body"
+        
+      bounded_query:
+        question: "If plugin has observer container, does Deinitialize() call Release() on each observer and clear container?"
+        expected_answer: "Yes (if observers exist)"
+        
+      verification_logic:
+        - "Search class for observer container (_observers, _sinks, etc.)"
+        - "If NOT found: Skip check"
+        - "If found: Extract Deinitialize() body"
+        - "Search for loop iterating container"
+        - "Search for ->Release() calls in loop"
+        - "Search for container.clear() call"
+        - "If any missing: Violation, cite Deinitialize start line"
+        
+      violation_pattern:
+        condition: "Observer container exists but not cleaned up in Deinitialize"
+        example_wrong: |
+          void Deinitialize(...) {
+              Unregister(*this);
+              // ❌ Missing observer Release loop and clear
+          }
+          
+      fix_template:
+        action: "Add observer cleanup loop"
+        code: |
+          _adminLock.Lock();
+          for (auto& entry : _observers) {
+              if (entry.second != nullptr) {
+                  entry.second->Release();
+              }
+          }
+          _observers.clear();
+          _adminLock.Unlock();
+          
+      citation:
+        line_format: "[filename:LINE] Deinitialize missing observer Release/clear"
+        rule: "10.4-plugin-lifecycle.md - Deinitialize and Cleanup"
+
+# ============================================================================
+# PHASE 5: IMPLEMENTATION CHECKPOINTS
+# ============================================================================
+phase_5_checkpoints:
+  phase_id: "implementation"
+  phase_name: "Implementation Patterns"
+  rule_file: "10.5-plugin-implementation.md"
+  
+  checkpoints:
+    - checkpoint_id: "implementation_5_3"
+      name: "Config not stored as member"
+      severity: "violation"
+      
+      extraction:
+        target: "Plugin class declaration in .h file"
+        method: "Extract private members section"
+        code_block: "Private member declarations"
+        
+      bounded_query:
+        question: "Is there a 'Config _config;' member variable?"
+        expected_answer: "No"
+        
+      verification_logic:
+        - "Search class private section for 'Config _config'"
+        - "If found: Violation, cite line"
+        - "Recommended: Store extracted values as plain members instead"
+        
+      violation_pattern:
+        condition: "Config object stored as member"
+        example_wrong: |
+          private:
+              Config _config;  // ❌ Line 332: Should be stack-local
+              
+      fix_template:
+        action: "Replace Config member with extracted value members"
+        code: |
+          // REMOVE:
+          // Config _config;
+          
+          // ADD:
+          string _storagePath;
+          uint16_t _lingerTime;
+          
+          // In Initialize():
+          Config config;  // Stack-local
+          config.FromString(service->ConfigLine());
+          _storagePath = config.Storage.Value();
+          _lingerTime = config.LingerTime.Value();
+          
+      citation:
+        line_format: "[filename:LINE] Config stored as member, should be stack-local in Initialize"
+        rule: "10.5-plugin-implementation.md - JSON Configuration Class"
+        
+    - checkpoint_id: "implementation_5_5"
+      name: "No callbacks under lock"
+      severity: "violation"
+      
+      extraction:
+        target: "Functions with _adminLock.Lock/Unlock"
+        method: "Extract each Lock()...Unlock() block"
+        code_block: "Complete locked section"
+        
+      bounded_query:
+        question: "Between _adminLock.Lock() and _adminLock.Unlock(), are there calls to observer methods, JSON-RPC events, or external plugin methods?"
+        expected_answer: "No"
+        
+      verification_logic:
+        - "Find all _adminLock.Lock() calls"
+        - "For each Lock, find corresponding Unlock"
+        - "Extract code between Lock and Unlock"
+        - "Search for patterns:"
+        - "  - observer->Method()"
+        - "  - Exchange::J*::Event::"
+        - "  - NotifyObservers()"
+        - "  - Any external callback invocation"
+        - "If found: Violation, cite line of external call"
+        
+      violation_pattern:
+        condition: "External callback invoked while holding lock"
+        example_wrong: |
+          _adminLock.Lock();
+          DoInternalWork();
+          NotifyForUpdate(path, key, value);  // ❌ Line 345: Callback under lock
+          _adminLock.Unlock();
+          
+      fix_template:
+        action: "Snapshot data under lock, release lock, then invoke callback"
+        code: |
+          bool shouldNotify = false;
+          string savedPath, savedKey, savedValue;
+          
+          _adminLock.Lock();
+          DoInternalWork();
+          if (condition) {
+              shouldNotify = true;
+              savedPath = path;
+              savedKey = key;
+              savedValue = value;
+          }
+          _adminLock.Unlock();
+          
+          if (shouldNotify) {
+              NotifyForUpdate(savedPath, savedKey, savedValue);
+          }
+          
+      citation:
+        line_format: "[filename:LINE] External callback invoked while holding _adminLock"
+        rule: "10.5-plugin-implementation.md - Thread Safety"
+        
+    - checkpoint_id: "implementation_5_2"
+      name: "JSON-RPC Register/Unregister paired"
+      severity: "violation"
+      conditional: true
+      
+      extraction:
+        target: "Initialize() and Deinitialize() methods"
+        method: "Extract both complete methods"
+        code_block: "Both Initialize and Deinitialize bodies"
+        
+      bounded_query:
+        question: "For each 'Exchange::J*::Register()' in Initialize, is there a matching 'Exchange::J*::Unregister()' in Deinitialize?"
+        expected_answer: "Yes (if JSON-RPC used)"
+        
+      verification_logic:
+        - "Search Initialize for 'Exchange::J.*::Register'"
+        - "If NOT found: Skip check (not applicable)"
+        - "Extract class name from Register call"
+        - "Search Deinitialize for matching '::Unregister' with same class"
+        - "If not found: Violation, cite Initialize line"
+        
+      violation_pattern:
+        condition: "Register in Initialize but no matching Unregister in Deinitialize"
+        example_wrong: |
+          Initialize: Exchange::JDictionary::Register(*this, this);
+          Deinitialize: // ❌ Missing Unregister
+          
+      fix_template:
+        action: "Add matching Unregister in Deinitialize"
+        code: "Exchange::JDictionary::Unregister(*this);"
+        
+      citation:
+        line_format: "[filename:LINE] JSON-RPC Register without matching Unregister"
+        rule: "10.5-plugin-implementation.md - JSON-RPC registration"
+
+# ============================================================================
+# PHASE 6: CONFIGURATION CHECKPOINTS
+# ============================================================================
+phase_6_checkpoints:
+  phase_id: "configuration"
+  phase_name: "Configuration Files"
+  rule_file: "10.6-plugin-config.md"
+  conditional: true
+  
+  checkpoints:
+    - checkpoint_id: "config_6_1"
+      name: "Config file has startmode"
+      severity: "warning"
+      
+      extraction:
+        target: "*.conf.in file"
+        method: "Read entire file"
+        code_block: "Complete config file"
+        
+      bounded_query:
+        question: "Does the .conf.in file contain 'startmode = ' declaration?"
+        expected_answer: "Yes"
+        
+      verification_logic:
+        - "Find .conf.in file in plugin directory"
+        - "If NOT found: Skip phase"
+        - "Search for line starting with 'startmode ='"
+        - "If not found: Warning, cite file"
+        
+      violation_pattern:
+        condition: "No startmode declaration in .conf.in"
+        
+      fix_template:
+        action: "Add startmode at top of config"
+        code: 'startmode = "@PLUGIN_PLUGINNAME_STARTMODE@"'
+        valid_values:
+          - "Activated"    # Plugin starts automatically
+          - "Deactivated"  # Plugin loaded but not started
+          - "Unavailable"  # Plugin not available
+
+# ============================================================================
+# PHASE 7: CMAKE CHECKPOINTS
+# ============================================================================
+phase_7_checkpoints:
+  phase_id: "cmake"
+  phase_name: "Build System"
+  rule_file: "10.7-plugin-cmake.md"
+  
+  checkpoints:
+    - checkpoint_id: "cmake_7_1"
+      name: "cmake_minimum_required is first"
+      severity: "violation"
+      
+      extraction:
+        target: "CMakeLists.txt"
+        method: "Read file until first non-comment command"
+        code_block: "First CMake command"
+        
+      bounded_query:
+        question: "Is 'cmake_minimum_required(VERSION ...)' the first non-comment command?"
+        expected_answer: "Yes"
+        
+      verification_logic:
+        - "Read CMakeLists.txt line by line"
+        - "Skip comments (lines starting with #)"
+        - "Skip blank lines"
+        - "First command must be 'cmake_minimum_required'"
+        - "If not: Violation, cite line of actual first command"
+        
+      violation_pattern:
+        condition: "cmake_minimum_required not first command"
+        example_wrong: |
+          project(Dictionary)  # Line 16: Wrong order
+          cmake_minimum_required(VERSION 3.15)  # Line 17
+          
+      fix_template:
+        action: "Move cmake_minimum_required before project()"
+        code: |
+          cmake_minimum_required(VERSION 3.15)  # Move to first
+          project(Dictionary)
+          
+      citation:
+        line_format: "[filename:LINE] cmake_minimum_required not first, found {ACTUAL} first"
+        rule: "10.7-plugin-cmake.md - Plugin CMake Structure"
+        
+    - checkpoint_id: "cmake_7_3"
+      name: "CXX_STANDARD explicit value"
+      severity: "violation"
+      
+      extraction:
+        target: "CMakeLists.txt set_target_properties block"
+        method: "Find CXX_STANDARD setting"
+        code_block: "CXX_STANDARD line"
+        
+      bounded_query:
+        question: "Is CXX_STANDARD set to explicit value '11' (not a variable)?"
+        expected_answer: "Yes"
+        
+      verification_logic:
+        - "Search for 'CXX_STANDARD' in CMakeLists.txt"
+        - "Extract value after CXX_STANDARD"
+        - "Check if value is '11' (literal)"
+        - "If value contains '${' or '$(' : Violation (variable usage)"
+        - "Cite line"
+        
+      violation_pattern:
+        condition: "CXX_STANDARD uses variable instead of literal 11"
+        example_wrong: "CXX_STANDARD ${CXX_STD}  # Line 46"
+        
+      fix_template:
+        action: "Replace with explicit value"
+        code: "CXX_STANDARD 11"
+        
+      citation:
+        line_format: "[filename:LINE] CXX_STANDARD should be explicit '11', not variable"
+        rule: "10.7-plugin-cmake.md - Compiler Settings"
+
+# ============================================================================
+# CHECKPOINT EXECUTION ORDER
+# ============================================================================
+execution_order:
+  description: "Execute checkpoints in dependency order for efficiency"
+  
+  phases:
+    - phase: "phase_1"
+      order: 1
+      parallel: false
+      reason: "Module structure affects all other phases"
+      
+    - phase: "phase_3"
+      order: 2
+      parallel: false
+      reason: "Need class structure before checking lifecycle"
+      
+    - phase: "phase_2"
+      order: 3
+      parallel: true
+      reason: "Style checks independent of logic"
+      
+    - phase: "phase_4"
+      order: 4
+      parallel: false
+      reason: "Lifecycle methods must exist before checking implementation"
+      
+    - phase: "phase_5"
+      order: 5
+      parallel: true
+      reason: "Implementation checks can run in parallel"
+      
+    - phase: "phase_6"
+      order: 6
+      parallel: true
+      reason: "Config file check independent"
+      
+    - phase: "phase_7"
+      order: 7
+      parallel: true
+      reason: "CMake check independent"
+
+# ============================================================================
+# OUTPUT FORMAT FOR BOUNDED QUERIES
+# ============================================================================
+output_format:
+  checkpoint_result:
+    structure:
+      checkpoint_id: "Unique identifier"
+      status: "PASS | FAIL | SKIP"
+      question: "The specific yes/no question asked"
+      answer: "Yes | No"
+      extracted_code: "The code block analyzed (max 20 lines)"
+      violation_line: "Exact line number if FAIL"
+      citation: "Formatted citation string"
+      fix: "Specific code fix for this checkpoint"
+      reasoning: "Logical verification steps taken"
+      
+  example_pass:
+    checkpoint_id: "lifecycle_4_1"
+    status: "PASS"
+    question: "Is the first statement in Initialize() body 'ASSERT(service != nullptr);'?"
+    answer: "Yes"
+    extracted_code: |
+      const string Initialize(IShell* service) {
+          ASSERT(service != nullptr);  // ✓ Found at line 110
+          ...
+      }
+    reasoning: "Extracted Initialize body, found ASSERT as first statement"
+    
+  example_fail:
+    checkpoint_id: "lifecycle_4_1"
+    status: "FAIL"
+    question: "Is the first statement in Initialize() body 'ASSERT(service != nullptr);'?"
+    answer: "No"
+    extracted_code: |
+      const string Initialize(IShell* service) {
+          _config.FromString(service->ConfigLine());  // Line 108
+          ...
+      }
+    violation_line: 108
+    citation: "[Dictionary.cpp:108] Initialize missing ASSERT(service != nullptr) at start"
+    fix: |
+      const string Initialize(IShell* service) {
+          ASSERT(service != nullptr);  // Add this first
+          _config.FromString(service->ConfigLine());
+      }
+    reasoning: "Extracted Initialize, first statement is FromString not ASSERT, violation confirmed"
+    
+  example_skip:
+    checkpoint_id: "lifecycle_4_2"
+    status: "SKIP"
+    question: "If plugin stores IShell* as member, does Initialize() call AddRef()?"
+    answer: "N/A"
+    reasoning: "Searched class for IShell* member, not found, check not applicable to this plugin"
+
+# ============================================================================
+# CHECKPOINT SUMMARY METRICS
+# ============================================================================
+summary_metrics:
+  per_phase:
+    - phase_name: "Module Structure"
+      total_checkpoints: 3
+      mandatory: 3
+      conditional: 0
+      
+    - phase_name: "Code Style"
+      total_checkpoints: 3
+      mandatory: 2
+      conditional: 1
+      
+    - phase_name: "Class Registration"
+      total_checkpoints: 2
+      mandatory: 2
+      conditional: 0
+      
+    - phase_name: "Lifecycle"
+      total_checkpoints: 3
+      mandatory: 1
+      conditional: 2
+      
+    - phase_name: "Implementation"
+      total_checkpoints: 3
+      mandatory: 1
+      conditional: 2
+      
+    - phase_name: "Configuration"
+      total_checkpoints: 1
+      mandatory: 0
+      conditional: 1
+      
+    - phase_name: "CMake"
+      total_checkpoints: 2
+      mandatory: 2
+      conditional: 0
+      
+  totals:
+    total_checkpoints: 17  # Focused set for key violations
+    mandatory: 11
+    conditional: 6
+    
+# ============================================================================
+# VERIFICATION CONFIDENCE LEVELS
+# ============================================================================
+confidence_levels:
+  high:
+    - "Exact text match (Module.h include order)"
+    - "Presence/absence of specific token (ASSERT, AddRef)"
+    - "String literal comparison (Plugin_ prefix)"
+    - "Count matches (4 deleted special members)"
+    
+  medium:
+    - "Pattern matching in code block (callbacks under lock)"
+    - "Paired operations (Register/Unregister)"
+    - "Variable usage detection (VARIABLE_IS_NOT_USED)"
+    
+  requires_logic:
+    - "Error code overwrite detection (needs flow analysis)"
+    - "Observer cleanup verification (needs container tracking)"
+    - "Config storage (member vs stack-local distinction)"

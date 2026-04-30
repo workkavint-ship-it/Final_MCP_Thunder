@@ -1,0 +1,533 @@
+# Thunder Plugin Rules - Extended Checkpoints
+# Version: 2.1.0
+# Additional critical checkpoints beyond the core 17
+
+metadata:
+  version: "2.1.0"
+  description: "Extended checkpoint set with 8 additional critical validations"
+  extends: "thunder-plugin-rules-checkpoints.yaml"
+  new_checkpoints: 8
+  total_checkpoints: 25  # 17 core + 8 extended
+
+# ============================================================================
+# EXTENDED CHECKPOINTS (18-25)
+# ============================================================================
+
+extended_checkpoints:
+  
+  # ==========================================================================
+  # Checkpoint 18: Metadata Registration
+  # ==========================================================================
+  - checkpoint_id: "registration_3_4"
+    name: "Metadata registration present"
+    severity: "violation"
+    phase: "registration"
+    priority: "critical"
+    
+    extraction:
+      target: "Plugin .cpp file"
+      method: "Search for Plugin::Metadata<> or SERVICE_REGISTRATION"
+      code_block: "Metadata registration line"
+      
+    bounded_query:
+      question: "Does the plugin .cpp file contain Plugin::Metadata<> OR SERVICE_REGISTRATION?"
+      expected_answer: "Yes"
+      
+    verification_logic:
+      - "Search plugin .cpp for 'Plugin::Metadata<'"
+      - "If not found, search for 'SERVICE_REGISTRATION('"
+      - "If neither found: VIOLATION"
+      - "If found: Extract and verify plugin class name matches"
+      
+    violation_pattern:
+      condition: "No metadata registration found"
+      example_wrong: |
+        // Missing both:
+        // Plugin::Metadata<Plugin::Dictionary> metadata(...);
+        // SERVICE_REGISTRATION(Dictionary, 1, 0)
+        
+    fix_template:
+      action: "Add metadata registration"
+      code: |
+        namespace Thunder {
+        namespace {
+            static Plugin::Metadata<Plugin::PluginName> metadata(
+                // Version
+                1, 0, 0,
+                // Preconditions
+                {},
+                // Terminations
+                {},
+                // Controls
+                {}
+            );
+        }
+        }
+        
+    rationale: |
+      Thunder framework requires metadata registration to:
+      - Identify plugin version
+      - Manage subsystem dependencies (preconditions/terminations)
+      - Control subsystem lifecycle
+      Without metadata, plugin cannot be properly managed by framework.
+      
+    citation:
+      line_format: "[filename] Missing Plugin::Metadata or SERVICE_REGISTRATION"
+      rule: "10.3-plugin-class-registration.md - Service Registration"
+
+  # ==========================================================================
+  # Checkpoint 19: Information() Method
+  # ==========================================================================
+  - checkpoint_id: "lifecycle_4_4"
+    name: "Information() method implemented"
+    severity: "violation"
+    phase: "lifecycle"
+    priority: "high"
+    
+    extraction:
+      target: "Plugin class .cpp file"
+      method: "Search for 'string Information() const' implementation"
+      code_block: "Information() method"
+      
+    bounded_query:
+      question: "Does plugin implement 'string Information() const' method?"
+      expected_answer: "Yes"
+      
+    verification_logic:
+      - "Search .cpp for 'string PluginName::Information()' or similar"
+      - "Alternatively check .h for override declaration"
+      - "If not found: VIOLATION"
+      - "If found: Verify return type is 'string'"
+      
+    violation_pattern:
+      condition: "Information() method not implemented"
+      example_wrong: |
+        // Missing:
+        // string Dictionary::Information() const {
+        //     return string();
+        // }
+        
+    fix_template:
+      action: "Implement Information() method"
+      code: |
+        string PluginName::Information() const {
+            return string();  // Or return useful info
+        }
+        
+    rationale: |
+      IPlugin interface mandates Information() method.
+      Framework calls this to get plugin status/info.
+      Even if empty, must be implemented.
+      
+    citation:
+      line_format: "[filename] Missing Information() implementation"
+      rule: "10.4-plugin-lifecycle.md - Mandatory Lifecycle Methods"
+
+  # ==========================================================================
+  # Checkpoint 20: Constructor Only Initializes
+  # ==========================================================================
+  - checkpoint_id: "lifecycle_4_5"
+    name: "Constructor only initializes members"
+    severity: "violation"
+    phase: "lifecycle"
+    priority: "critical"
+    
+    extraction:
+      target: "Plugin constructor in .cpp file"
+      method: "Extract complete constructor body"
+      code_block: "Constructor with initializer list and body"
+      
+    bounded_query:
+      question: "Does constructor body contain any logic beyond member initialization?"
+      expected_answer: "No"
+      
+    verification_logic:
+      - "Extract constructor body (between { and })"
+      - "Check if body is empty or only has simple assignments"
+      - "Look for forbidden patterns:"
+      - "  - Function calls (except constructors in init list)"
+      - "  - new/delete"
+      - "  - Register/Subscribe calls"
+      - "  - Memory allocation"
+      - "  - File/network operations"
+      - "If any found: VIOLATION"
+      
+    violation_pattern:
+      condition: "Constructor contains logic beyond initialization"
+      example_wrong: |
+        Dictionary::Dictionary()
+            : _connectionId(0)
+            , _service(nullptr)
+        {
+            // ❌ Wrong: Logic in constructor!
+            _service = GetSomeService();
+            RegisterObserver(&_observer);
+            LoadConfiguration();
+        }
+        
+    fix_template:
+      action: "Move all logic to Initialize()"
+      code: |
+        // Constructor should ONLY initialize:
+        Dictionary::Dictionary()
+            : _connectionId(0)
+            , _service(nullptr)
+            , _config()
+        {
+            // Body empty or minimal initialization only
+        }
+        
+        // Move logic to Initialize():
+        const string Dictionary::Initialize(IShell* service) {
+            ASSERT(service != nullptr);
+            // All setup logic here
+        }
+        
+    rationale: |
+      Thunder plugin constructors run before framework is ready.
+      WorkerPool, service pointers, and framework APIs not available yet.
+      All initialization logic MUST be in Initialize() method.
+      
+    citation:
+      line_format: "[filename:LINE] Constructor contains logic beyond initialization"
+      rule: "10.4-plugin-lifecycle.md - Constructor and Destructor Rules"
+
+  # ==========================================================================
+  # Checkpoint 21: Destructor is Default or Empty
+  # ==========================================================================
+  - checkpoint_id: "lifecycle_4_6"
+    name: "Destructor is default or empty"
+    severity: "violation"
+    phase: "lifecycle"
+    priority: "critical"
+    
+    extraction:
+      target: "Plugin class .h and .cpp"
+      method: "Find destructor declaration and definition"
+      code_block: "Destructor"
+      
+    bounded_query:
+      question: "Is destructor either '= default' or has empty body?"
+      expected_answer: "Yes"
+      
+    verification_logic:
+      - "Find destructor in .h: '~PluginName()'"
+      - "Check if declared '= default' in .h"
+      - "If not default, find definition in .cpp"
+      - "Extract body between { and }"
+      - "If body is not empty: VIOLATION"
+      - "If contains any statements: VIOLATION"
+      
+    violation_pattern:
+      condition: "Destructor contains cleanup logic"
+      example_wrong: |
+        Dictionary::~Dictionary() {
+            // ❌ Wrong: Cleanup in destructor!
+            if (_service != nullptr) {
+                _service->Release();
+            }
+            _observers.clear();
+        }
+        
+    fix_template:
+      action: "Make destructor default, move cleanup to Deinitialize"
+      code: |
+        // In .h:
+        ~Dictionary() override = default;
+        
+        // Move all cleanup to Deinitialize():
+        void Dictionary::Deinitialize(IShell* service) {
+            // All cleanup here
+        }
+        
+    rationale: |
+      Destructor runs during shutdown in undefined order.
+      Framework may already be partially destroyed.
+      Member pointers may be invalid.
+      ALL cleanup must be in Deinitialize() where framework is still valid.
+      
+    citation:
+      line_format: "[filename:LINE] Destructor contains logic, should be = default"
+      rule: "10.4-plugin-lifecycle.md - Constructor and Destructor Rules"
+
+  # ==========================================================================
+  # Checkpoint 22: No std::string Usage
+  # ==========================================================================
+  - checkpoint_id: "style_2_7"
+    name: "Thunder string used instead of std::string"
+    severity: "warning"
+    phase: "style"
+    priority: "medium"
+    
+    extraction:
+      target: "All .cpp and .h files"
+      method: "Search for 'std::string' usage"
+      code_block: "Lines containing std::string"
+      
+    bounded_query:
+      question: "Are there any 'std::string' type usages?"
+      expected_answer: "No"
+      
+    verification_logic:
+      - "Search all files for 'std::string'"
+      - "Exclude: Comments, string literals"
+      - "For each occurrence:"
+      - "  - Check if it's a type declaration"
+      - "  - Check if it's in function signature"
+      - "  - If yes: WARNING"
+      - "Count occurrences"
+      
+    violation_pattern:
+      condition: "std::string used instead of Thunder string"
+      example_wrong: |
+        std::string GetValue();                    // ❌
+        void ProcessData(const std::string& str);  // ❌
+        std::string _data;                         // ❌
+        
+    fix_template:
+      action: "Replace with Thunder string type"
+      code: |
+        string GetValue();                    // ✓
+        void ProcessData(const string& str);  // ✓
+        string _data;                         // ✓
+        
+    rationale: |
+      Thunder uses its own string type for:
+      - Consistent memory management
+      - Integration with Core types
+      - Cross-platform compatibility
+      Mixing std::string and Thunder string causes conversions and inconsistency.
+      
+    citation:
+      line_format: "[filename:LINE] std::string used, should use Thunder string"
+      rule: "10.2-plugin-codestyle.md - Naming Conventions"
+
+  # ==========================================================================
+  # Checkpoint 23: No Exception Usage
+  # ==========================================================================
+  - checkpoint_id: "style_2_8"
+    name: "No exceptions thrown or caught"
+    severity: "violation"
+    phase: "style"
+    priority: "critical"
+    
+    extraction:
+      target: "All .cpp files"
+      method: "Search for exception keywords"
+      code_block: "Lines with throw/try/catch"
+      
+    bounded_query:
+      question: "Are there any 'throw', 'try', or 'catch' statements?"
+      expected_answer: "No"
+      
+    verification_logic:
+      - "Search for 'throw ' (with space to avoid std::nothrow)"
+      - "Search for 'try {'"
+      - "Search for 'catch ('"
+      - "Exclude: Comments"
+      - "If any found: VIOLATION, cite first occurrence"
+      
+    violation_pattern:
+      condition: "Exception usage found"
+      example_wrong: |
+        void ProcessData() {
+            try {                              // ❌
+                if (error) {
+                    throw std::runtime_error("Failed");  // ❌
+                }
+            } catch (const std::exception& e) {  // ❌
+                // handle
+            }
+        }
+        
+    fix_template:
+      action: "Replace with error code returns"
+      code: |
+        Core::hresult ProcessData() {
+            if (error) {
+                return Core::ERROR_GENERAL;  // ✓ Return error code
+            }
+            return Core::ERROR_NONE;
+        }
+        
+    rationale: |
+      Thunder framework does not use exceptions:
+      - All errors returned as Core::hresult codes
+      - No exception handling overhead
+      - No exception propagation across plugin boundaries
+      - Consistent error handling across framework
+      
+    citation:
+      line_format: "[filename:LINE] Exception usage found (throw/try/catch)"
+      rule: "10.2-plugin-codestyle.md - General Rules"
+
+  # ==========================================================================
+  # Checkpoint 24: Notification Sink Pattern (Conditional)
+  # ==========================================================================
+  - checkpoint_id: "implementation_5_4"
+    name: "Notification sinks use Core::SinkType"
+    severity: "violation"
+    phase: "implementation"
+    priority: "high"
+    conditional: true
+    
+    extraction:
+      target: "Plugin class .h file, notification inner classes"
+      method: "Find notification/observer inner classes"
+      code_block: "Notification class and member declaration"
+      
+    bounded_query:
+      question: "IF plugin has notification inner classes, THEN are they instantiated via Core::SinkType<>?"
+      expected_answer: "Yes (if applicable)"
+      
+    verification_logic:
+      - "Search .h for inner classes ending in 'Notification' or 'Observer'"
+      - "If none found: SKIP"
+      - "If found: Search for member declarations"
+      - "Check if member is 'Core::SinkType<NotificationClass>'"
+      - "If member is raw pointer 'NotificationClass*': VIOLATION"
+      - "If member is 'new NotificationClass': VIOLATION"
+      
+    violation_pattern:
+      condition: "Notification allocated with new instead of SinkType"
+      example_wrong: |
+        class NetworkNotification : public INotification {
+            // ... implementation
+        };
+        
+        // ❌ Wrong:
+        NetworkNotification* _notification;
+        
+        // In constructor:
+        _notification = new NetworkNotification(*this);
+        
+    fix_template:
+      action: "Use Core::SinkType for notification member"
+      code: |
+        class NetworkNotification : public INotification {
+            // ... implementation
+        };
+        
+        // ✓ Correct:
+        Core::SinkType<NetworkNotification> _notification;
+        
+        // In constructor initializer list:
+        : _notification(*this)
+        
+    rationale: |
+      Core::SinkType provides:
+      - Automatic reference counting
+      - Proper lifetime management
+      - Integration with Thunder event system
+      Raw new/delete bypasses framework memory management.
+      
+    citation:
+      line_format: "[filename:LINE] Notification not using Core::SinkType"
+      rule: "10.5-plugin-implementation.md - Notification and Sink Pattern"
+
+  # ==========================================================================
+  # Checkpoint 25: Initialize Success Return
+  # ==========================================================================
+  - checkpoint_id: "lifecycle_4_7"
+    name: "Initialize returns empty string on success"
+    severity: "suggestion"
+    phase: "lifecycle"
+    priority: "low"
+    
+    extraction:
+      target: "Initialize() method"
+      method: "Extract complete method, find all return statements"
+      code_block: "Initialize() with returns"
+      
+    bounded_query:
+      question: "Does Initialize() return 'string()' or empty literal for success?"
+      expected_answer: "string() preferred"
+      
+    verification_logic:
+      - "Extract Initialize() method"
+      - "Find all 'return' statements"
+      - "For success path (usually last return):"
+      - "  - If 'return _T(\"\")': SUGGESTION"
+      - "  - If 'return \"\"': SUGGESTION"
+      - "  - If 'return string()': PASS"
+      - "  - If 'return {}': PASS"
+      
+    violation_pattern:
+      condition: "Success return uses literal instead of string()"
+      example_weak: |
+        const string Initialize(IShell* service) {
+            // ... success logic
+            return _T("");  // Less preferred
+        }
+        
+    fix_template:
+      action: "Use string() for consistency"
+      code: |
+        const string Initialize(IShell* service) {
+            // ... success logic
+            return string();  // Preferred
+        }
+        
+    rationale: |
+      Using string() for success is more consistent:
+      - Clear intent (empty = success)
+      - Avoids macro dependency (_T)
+      - Modern C++ style
+      Not critical, but improves consistency.
+      
+    citation:
+      line_format: "[filename:LINE] Initialize returns literal, consider string()"
+      rule: "10.4-plugin-lifecycle.md - Initialization"
+
+# ============================================================================
+# SUMMARY OF EXTENDED CHECKPOINTS
+# ============================================================================
+
+extended_summary:
+  total_new: 8
+  by_severity:
+    violation: 6
+    warning: 1
+    suggestion: 1
+    
+  by_phase:
+    style: 2        # String usage, Exceptions
+    registration: 1 # Metadata
+    lifecycle: 4    # Information(), Constructor, Destructor, Return
+    implementation: 1 # SinkType
+    
+  by_priority:
+    critical: 4     # Constructor, Destructor, Exceptions, Metadata
+    high: 2         # Information(), SinkType
+    medium: 1       # String usage
+    low: 1          # Return style
+    
+  conditional_checks: 1  # SinkType (only if notifications exist)
+
+# ============================================================================
+# COMBINED CHECKPOINT COVERAGE
+# ============================================================================
+
+combined_coverage:
+  core_checkpoints: 17
+  extended_checkpoints: 8
+  total_checkpoints: 25
+  
+  phase_totals:
+    module_structure: 3
+    code_style: 5        # Added: String, Exceptions
+    class_registration: 3 # Added: Metadata
+    lifecycle: 7         # Added: Information, Constructor, Destructor, Return
+    implementation: 4    # Added: SinkType
+    configuration: 1
+    cmake: 2
+    
+  coverage_summary: |
+    Complete Thunder plugin validation with 25 bounded checkpoints:
+    - Core plugin structure and registration
+    - Lifecycle method requirements
+    - Memory management patterns
+    - Threading and callbacks
+    - Error handling
+    - Build system
+    - Plus extended patterns for production-ready plugins
