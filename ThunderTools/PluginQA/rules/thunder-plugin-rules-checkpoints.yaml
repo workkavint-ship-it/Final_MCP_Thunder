@@ -763,7 +763,7 @@ phase_7_checkpoints:
         rule: "10.7-plugin-cmake.md - Plugin CMake Structure"
         
     - checkpoint_id: "cmake_7_3"
-      name: "CXX_STANDARD explicit value"
+      name: "CXX_STANDARD uses ${CXX_STD} variable"
       severity: "violation"
       
       extraction:
@@ -772,27 +772,31 @@ phase_7_checkpoints:
         code_block: "CXX_STANDARD line"
         
       bounded_query:
-        question: "Is CXX_STANDARD set to explicit value '11' (not a variable)?"
+        question: "Is CXX_STANDARD set to '${CXX_STD}' variable (Thunder standard pattern)?"
         expected_answer: "Yes"
         
       verification_logic:
         - "Search for 'CXX_STANDARD' in CMakeLists.txt"
         - "Extract value after CXX_STANDARD"
-        - "Check if value is '11' (literal)"
-        - "If value contains '${' or '$(' : Violation (variable usage)"
+        - "Check if value is '${CXX_STD}' (Thunder standard)"
+        - "If value is literal '11' or other value: Violation"
         - "Cite line"
         
       violation_pattern:
-        condition: "CXX_STANDARD uses variable instead of literal 11"
-        example_wrong: "CXX_STANDARD ${CXX_STD}  # Line 46"
+        condition: "CXX_STANDARD not using ${CXX_STD} variable"
+        example_wrong: "CXX_STANDARD 11  # Should use ${CXX_STD}"
         
       fix_template:
-        action: "Replace with explicit value"
-        code: "CXX_STANDARD 11"
+        action: "Use Thunder standard variable"
+        code: |
+          set_target_properties(${MODULE_NAME} PROPERTIES
+              CXX_STANDARD ${CXX_STD}
+              CXX_STANDARD_REQUIRED YES)
         
       citation:
-        line_format: "[filename:LINE] CXX_STANDARD should be explicit '11', not variable"
+        line_format: "[filename:LINE] CXX_STANDARD should use ${CXX_STD} variable (Thunder standard)"
         rule: "10.7-plugin-cmake.md - Compiler Settings"
+        rationale: "All Thunder plugins use ${CXX_STD} variable for consistent C++ standard management"
 
 # ============================================================================
 # CHECKPOINT EXECUTION ORDER

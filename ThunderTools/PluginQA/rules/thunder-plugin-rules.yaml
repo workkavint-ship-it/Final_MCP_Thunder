@@ -462,13 +462,17 @@ phases:
           - "ThunderPlugins (hardcoded)"
         
       - id: "cmake_7_3"
-        name: "CXX_STANDARD explicit"
+        name: "CXX_STANDARD uses ${CXX_STD}"
         severity: "violation"
-        description: "Must explicitly set CXX_STANDARD 11"
-        rationale: "Ensures consistent C++ standard"
+        description: "Must use ${CXX_STD} variable for C++ standard (Thunder pattern)"
+        rationale: "All Thunder plugins use ${CXX_STD} for consistent standard management"
         files: ["**/CMakeLists.txt"]
-        pattern: "CXX_STANDARD 11"
-        incorrect_pattern: "CXX_STANDARD ${CXX_STD}"
+        pattern: "CXX_STANDARD ${CXX_STD}"
+        incorrect_pattern: "CXX_STANDARD 11"
+        correct_example: |
+          set_target_properties(${MODULE_NAME} PROPERTIES
+              CXX_STANDARD ${CXX_STD}
+              CXX_STANDARD_REQUIRED YES)
         
       - id: "cmake_7_4"
         name: "write_config() last"

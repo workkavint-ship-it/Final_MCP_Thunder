@@ -12,14 +12,16 @@
 | Metric | Dictionary | BluetoothControl |
 |--------|------------|------------------|
 | **Total Checkpoints** | 25 | 25 |
-| **Pass** | 10 | 13 |
-| **Fail** | 12 | 9 |
+| **Pass** | 11 | 14 |
+| **Fail** | 11 | 8 |
 | **Skip** | 1 | 1 |
 | **Warnings** | 1 | 0 |
 | **Suggestions** | 1 | 1 |
-| **Overall Quality** | 40% Pass | 52% Pass |
+| **Overall Quality** | 44% Pass | 56% Pass |
 
 **Winner:** 🏆 **BluetoothControl** (3 fewer violations, better code quality)
+
+**Correction Note:** Checkpoint 7.2 updated to reflect actual Thunder standard (${CXX_STD} is correct)
 
 ---
 
@@ -111,8 +113,8 @@
 | Checkpoint | Dictionary | BluetoothControl | Notes |
 |------------|------------|------------------|-------|
 | 7.1 cmake_minimum_required first | ❌ FAIL (Line 18) | ❌ FAIL (Line 17) | Systematic issue |
-| 7.2 CXX_STANDARD explicit | ❌ FAIL (Line 45) | ❌ FAIL (Line 64) | Systematic issue |
-| **Phase Score** | **0/2 (0%)** | **0/2 (0%)** | **Tie** |
+| 7.2 CXX_STANDARD uses ${CXX_STD} | ✅ PASS (Line 45) | ✅ PASS (Line 64) | Both correct |
+| **Phase Score** | **1/2 (50%)** | **1/2 (50%)** | **Tie** |
 
 **Common Violations:** Both plugins have identical CMake structure issues
 
@@ -124,6 +126,7 @@
 
 | ID | Violation | Impact | Fix Priority |
 |----|-----------|--------|--------------|
+| NOTE | ~~7.2 CXX_STANDARD~~ | **CORRECTED**: Using ${CXX_STD} is the CORRECT Thunder pattern | N/A |
 | 1.1 | Module.h not first include | Module macros not defined before plugin headers | HIGH |
 | 3.1 | Move ctors not deleted | Incomplete object semantics | MEDIUM |
 | 4.3 | Observer cleanup missing | Reference leaks | **CRITICAL** |
@@ -131,9 +134,11 @@
 | 5.2 | Callbacks under lock | Deadlock risk | **CRITICAL** |
 | 5.4 | Raw pointer observers | Memory management issues | **CRITICAL** |
 | 7.1 | cmake_min order | Policy setup issues | LOW |
-| 7.2 | CXX_STANDARD variable | Build inconsistency | LOW |
+| 7.1 | cmake_minimum_required order | Policy setup issues | LOW |
 
-**8 systematic violations** affect multiple plugins - **framework-wide fixes needed!**
+**7 systematic violations** affect multiple plugins - **framework-wide fixes needed!**
+
+> **Note:** Checkpoint 7.2 was corrected - ${CXX_STD} is the standard Thunder pattern, not a violation.
 
 ---
 
@@ -147,7 +152,9 @@
 | 4.1 | Missing ASSERT in Initialize | 115 | Violation |
 | 4.7 | Return style (_T("")) | 131 | Suggestion |
 
-**Total: 4 violations + 1 suggestion unique to Dictionary**
+**Total: 3 violations + 1 suggestion unique to Dictionary**
+
+**Note:** CXX_STANDARD check removed - ${CXX_STD} is correct Thunder pattern
 
 ---
 
@@ -410,8 +417,8 @@ const string Initialize(IShell* service) {
 | **Lifecycle** | 67% | 83% |
 | **Implementation** | 25% | 25% |
 | **Configuration** | 100% | 100% |
-| **Build System** | 0% | 0% |
-| **Overall** | **52%** | **63%** |
+| **Build System** | 50% | 50% |
+| **Overall** | **55%** | **66%** |
 
 ---
 
