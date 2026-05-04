@@ -21,9 +21,7 @@ This is fundamentally different from open-ended whole-file review:
 
 Read: `ThunderTools/PluginQA/rules/thunder-plugin-rules-checkpoints.yaml`
 
-This file defines **18 core checkpoints** across 7 phases.  
-Extended checkpoints: `thunder-plugin-rules-checkpoints-extended.yaml` (12 additional checks)  
-**Total: 30 automated checkpoints** (includes 4 new high-priority rules)
+This file defines **all 29 automated checkpoints** (unified: 17 core + 12 extended) across 8 phases.
 
 Each checkpoint specifies:
 - **extraction**: What code block to extract
@@ -382,7 +380,7 @@ Phase 7 (CMake): 0/2 PASS, 2 FAIL
 - ❌ 7.1: cmake_minimum_required not first → [CMakeLists.txt:16]
 - ❌ 7.2: CXX_STANDARD not explicit → [CMakeLists.txt:46]
 
-**Total: 15 PASS, 14 FAIL, 1 SKIP (30 automated checkpoints)**
+**Total: 15 PASS, 14 FAIL, 1 SKIP (29 automated checkpoints)**
 **Violations: 14 must-fix issues found**
 ```
 
@@ -409,9 +407,9 @@ Phase 7 (CMake): 0/2 PASS, 2 FAIL
 
 # PHASE 2: Additional Manual Review (7 More Rules)
 
-After completing the 30 automated checkpoints above, **7 additional rules** require manual review. These rules need human judgment or context understanding that's difficult to automate.
+After completing the 29 automated checkpoints above, **7 additional rules** require manual review. These rules need human judgment or context understanding that's difficult to automate.
 
-**Total Coverage: 30 automated + 7 manual = 37 complete rules**
+**Total Coverage: 29 automated + 7 manual = 36 complete rules**
 
 Present these to the user as follow-up review items with specific questions to check.
 
@@ -426,7 +424,7 @@ Present these to the user as follow-up review items with specific questions to c
 
 ## Additional Manual Review Required (7 Rules)
 
-The automated checkpoints covered 30 rules. The following 7 rules require manual inspection:
+The automated checkpoints covered 29 rules. The following 7 rules require manual inspection:
 
 ### 1. ✋ Module.h Header Guards (module_1_4)
 **Question:** Does Module.h use `#pragma once` instead of legacy header guards?

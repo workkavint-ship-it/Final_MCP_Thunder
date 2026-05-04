@@ -1,13 +1,15 @@
 # Thunder Plugin Development Rules - Checkpoint-Based Validation
-# Version: 2.0.0
+# Version: 3.0.0 - UNIFIED (Core + Extended)
 # Approach: Bounded AI queries with specific yes/no questions and code extraction
 
 metadata:
-  version: "2.0.0"
-  description: "Checkpoint-based Thunder plugin validation with bounded queries"
+  version: "3.0.0"
+  description: "Unified checkpoint-based Thunder plugin validation with bounded queries"
   approach: "Extract specific code blocks, ask targeted questions, verify with logic"
   source: "ThunderTools/PluginQA/rules/*.md"
-  last_updated: "2026-04-30"
+  last_updated: "2026-05-04"
+  total_checkpoints: 29
+  organization: "17 core + 12 extended integrated into phases"
 
 # ============================================================================
 # CHECKPOINT VALIDATION FRAMEWORK
@@ -266,6 +268,118 @@ phase_2_checkpoints:
       fix_template:
         action: "Replace NULL with nullptr"
         code: "nullptr"
+        
+    - checkpoint_id: "style_2_7"
+      name: "Thunder string used instead of std::string"
+      severity: "warning"
+      
+      extraction:
+        target: "All .cpp and .h files"
+        method: "Search for 'std::string' usage"
+        code_block: "Lines containing std::string"
+        
+      bounded_query:
+        question: "Are there any 'std::string' type usages?"
+        expected_answer: "No"
+        
+      verification_logic:
+        - "Search all files for 'std::string'"
+        - "Exclude: Comments, string literals"
+        - "For each occurrence check if it's a type declaration"
+        - "If yes: WARNING"
+        
+      violation_pattern:
+        condition: "std::string used instead of Thunder string"
+        example_wrong: |
+          std::string GetValue();  // ❌
+          std::string _data;       // ❌
+          
+      fix_template:
+        action: "Replace with Thunder string type"
+        code: |
+          string GetValue();  // ✓
+          string _data;       // ✓
+          
+      citation:
+        line_format: "[filename:LINE] std::string used, should use Thunder string"
+        rule: "10.2-plugin-codestyle.md - Naming Conventions"
+        
+    - checkpoint_id: "style_2_8"
+      name: "No exceptions thrown or caught"
+      severity: "violation"
+      
+      extraction:
+        target: "All .cpp files"
+        method: "Search for exception keywords"
+        code_block: "Lines with throw/try/catch"
+        
+      bounded_query:
+        question: "Are there any 'throw', 'try', or 'catch' statements?"
+        expected_answer: "No"
+        
+      verification_logic:
+        - "Search for 'throw ' (with space)"
+        - "Search for 'try {'"
+        - "Search for 'catch ('"
+        - "If any found: VIOLATION"
+        
+      violation_pattern:
+        condition: "Exception usage found"
+        example_wrong: |
+          try {                      // ❌
+              throw std::exception();  // ❌
+          } catch (...) {}           // ❌
+          
+      fix_template:
+        action: "Replace with error code returns"
+        code: |
+          Core::hresult ProcessData() {
+              if (error) {
+                  return Core::ERROR_GENERAL;
+              }
+              return Core::ERROR_NONE;
+          }
+          
+      citation:
+        line_format: "[filename:LINE] Exception usage found (throw/try/catch)"
+        rule: "10.2-plugin-codestyle.md - General Rules"
+        
+    - checkpoint_id: "style_2_9"
+      name: "No delete on COM interface pointers"
+      severity: "violation"
+      
+      extraction:
+        target: "Entire plugin .cpp files"
+        method: "Search for 'delete' statements"
+        code_block: "Block containing delete statement"
+        
+      bounded_query:
+        question: "Are there any 'delete' statements used on interface pointer types (I*)?"
+        expected_answer: "No"
+        
+      verification_logic:
+        - "Search for 'delete' or 'delete[]' in .cpp files"
+        - "Check if variable has interface type (I*)"
+        - "If delete on interface pointer: VIOLATION"
+        - "If ->Release() used: PASS"
+        
+      violation_pattern:
+        condition: "Using delete on COM interface pointers"
+        example_wrong: |
+          IMyInterface* interface = ...;
+          delete interface;  // ❌
+          
+      fix_template:
+        action: "Use ->Release() for COM objects"
+        code: |
+          if (interface != nullptr) {
+              interface->Release();
+              interface = nullptr;
+          }
+          
+      citation:
+        line_format: "[filename:LINE] delete used on interface pointer, must use ->Release()"
+        rule: "10.5-plugin-implementation.md - COM Interface Management"
 
 # ============================================================================
 # PHASE 3: CLASS REGISTRATION CHECKPOINTS
@@ -344,6 +458,49 @@ phase_3_checkpoints:
       fix_template:
         action: "Add IPlugin entry"
         code: "INTERFACE_ENTRY(PluginHost::IPlugin)  // or INTERFACE_ENTRY(IPlugin) if in scope"
+        
+    - checkpoint_id: "registration_3_4"
+      name: "Metadata registration present"
+      severity: "violation"
+      
+      extraction:
+        target: "Plugin .cpp file"
+        method: "Search for Plugin::Metadata<> or SERVICE_REGISTRATION"
+        code_block: "Metadata registration line"
+        
+      bounded_query:
+        question: "Does the plugin .cpp file contain Plugin::Metadata<> OR SERVICE_REGISTRATION?"
+        expected_answer: "Yes"
+        
+      verification_logic:
+        - "Search plugin .cpp for 'Plugin::Metadata<'"
+        - "If not found, search for 'SERVICE_REGISTRATION('"
+        - "If neither found: VIOLATION"
+        
+      violation_pattern:
+        condition: "No metadata registration found"
+        
+      fix_template:
+        action: "Add metadata registration"
+        code: |
+          namespace Thunder {
+          namespace {
+              static Plugin::Metadata<Plugin::PluginName> metadata(
+                  // Version
+                  1, 0, 0,
+                  // Preconditions
+                  {},
+                  // Terminations
+                  {},
+                  // Controls
+                  {}
+              );
+          }
+          }
+          
+      citation:
+        line_format: "[filename] Missing Plugin::Metadata or SERVICE_REGISTRATION"
+        rule: "10.3-plugin-class-registration.md - Service Registration"
 
 # ============================================================================
 # PHASE 4: LIFECYCLE CHECKPOINTS
@@ -532,6 +689,175 @@ phase_4_checkpoints:
       citation:
         line_format: "[filename:LINE] Deinitialize missing observer Release/clear"
         rule: "10.4-plugin-lifecycle.md - Deinitialize and Cleanup"
+        
+    - checkpoint_id: "lifecycle_4_4"
+      name: "Information() method implemented"
+      severity: "violation"
+      
+      extraction:
+        target: "Plugin class .cpp file"
+        method: "Search for 'string Information() const' implementation"
+        code_block: "Information() method"
+        
+      bounded_query:
+        question: "Does plugin implement 'string Information() const' method?"
+        expected_answer: "Yes"
+        
+      verification_logic:
+        - "Search .cpp for 'string PluginName::Information()'"
+        - "If not found: VIOLATION"
+        
+      violation_pattern:
+        condition: "Information() method not implemented"
+        
+      fix_template:
+        action: "Implement Information() method"
+        code: |
+          string PluginName::Information() const {
+              return string();
+          }
+          
+      citation:
+        line_format: "[filename] Missing Information() implementation"
+        rule: "10.4-plugin-lifecycle.md - Mandatory Methods"
+        
+    - checkpoint_id: "lifecycle_4_5"
+      name: "Constructor only initializes members"
+      severity: "violation"
+      
+      extraction:
+        target: "Plugin constructor in .cpp"
+        method: "Extract complete constructor body"
+        code_block: "Constructor with initializer list and body"
+        
+      bounded_query:
+        question: "Does constructor body contain logic beyond initialization?"
+        expected_answer: "No"
+        
+      verification_logic:
+        - "Extract constructor body"
+        - "Check if body is empty or minimal"
+        - "Look for function calls, new/delete, Register calls"
+        - "If any found: VIOLATION"
+        
+      violation_pattern:
+        condition: "Constructor contains logic"
+        example_wrong: |
+          Dictionary::Dictionary() {
+              RegisterObserver();  // ❌
+          }
+          
+      fix_template:
+        action: "Move logic to Initialize()"
+        code: |
+          Dictionary::Dictionary()
+              : _service(nullptr)
+          {
+              // Empty
+          }
+          
+      citation:
+        line_format: "[filename:LINE] Constructor contains logic"
+        rule: "10.4-plugin-lifecycle.md - Constructor Rules"
+        
+    - checkpoint_id: "lifecycle_4_6"
+      name: "Destructor is default or empty"
+      severity: "violation"
+      
+      extraction:
+        target: "Plugin destructor"
+        method: "Find destructor definition"
+        code_block: "Destructor"
+        
+      bounded_query:
+        question: "Is destructor '= default' or empty?"
+        expected_answer: "Yes"
+        
+      verification_logic:
+        - "Check if declared '= default'"
+        - "If not default, check body is empty"
+        - "If contains cleanup: VIOLATION"
+        
+      violation_pattern:
+        condition: "Destructor contains cleanup"
+        example_wrong: |
+          ~Dictionary() {
+              _service->Release();  // ❌
+          }
+          
+      fix_template:
+        action: "Make default, move to Deinitialize"
+        code: "~Dictionary() override = default;"
+        
+      citation:
+        line_format: "[filename:LINE] Destructor not default/empty"
+        rule: "10.4-plugin-lifecycle.md - Destructor Rules"
+        
+    - checkpoint_id: "lifecycle_4_8"
+      name: "Initialize returns empty string on success"
+      severity: "suggestion"
+      
+      extraction:
+        target: "Initialize() method"
+        method: "Find return statements"
+        code_block: "Initialize() returns"
+        
+      bounded_query:
+        question: "Does Initialize() return 'string()' for success?"
+        expected_answer: "string() preferred"
+        
+      verification_logic:
+        - "Find success return"
+        - "If 'return _T(\"\")': SUGGESTION"
+        - "If 'return string()': PASS"
+        
+      violation_pattern:
+        condition: "Uses literal instead of string()"
+        
+      fix_template:
+        code: "return string();"
+        
+      citation:
+        line_format: "[filename:LINE] Consider string() instead of literal"
+        rule: "10.4-plugin-lifecycle.md - Return Style"
+        
+    - checkpoint_id: "oop_9_1"
+      name: "OOP plugin calls connection->Terminate()"
+      severity: "violation"
+      conditional: true
+      
+      extraction:
+        target: "Deinitialize() in OOP plugins"
+        method: "Check for connection->Terminate()"
+        code_block: "Deinitialize method"
+        
+      bounded_query:
+        question: "IF out-of-process, does Deinitialize() call connection->Terminate()?"
+        expected_answer: "Yes (if OOP)"
+        
+      verification_logic:
+        - "Check if OOP plugin (OUTOFPROCESS config)"
+        - "If in-process: SKIP"
+        - "If OOP: Check for connection->Terminate()"
+        - "If missing: VIOLATION"
+        
+      violation_pattern:
+        condition: "OOP plugin missing Terminate()"
+        
+      fix_template:
+        code: |
+          if (_connectionId != 0) {
+              RPC::IRemoteConnection* conn = 
+                  _service->RemoteConnection(_connectionId);
+              if (conn != nullptr) {
+                  conn->Terminate();
+                  conn->Release();
+              }
+          }
+          
+      citation:
+        line_format: "[filename:LINE] OOP plugin missing connection->Terminate()"
+        rule: "10.4-plugin-lifecycle.md - OOP Lifecycle"
 
 # ============================================================================
 # PHASE 5: IMPLEMENTATION CHECKPOINTS
@@ -676,6 +1002,99 @@ phase_5_checkpoints:
       citation:
         line_format: "[filename:LINE] JSON-RPC Register without matching Unregister"
         rule: "10.5-plugin-implementation.md - JSON-RPC registration"
+        
+    - checkpoint_id: "implementation_5_4"
+      name: "Notification sinks use Core::SinkType"
+      severity: "violation"
+      conditional: true
+      
+      extraction:
+        target: "Plugin class .h, notification classes"
+        method: "Find notification/observer inner classes"
+        code_block: "Notification class and member"
+        
+      bounded_query:
+        question: "IF plugin has notifications, are they using Core::SinkType<>?"
+        expected_answer: "Yes (if applicable)"
+        
+      verification_logic:
+        - "Search for inner classes ending in 'Notification'"
+        - "If none: SKIP"
+        - "Check if member is 'Core::SinkType<NotificationClass>'"
+        - "If raw pointer: VIOLATION"
+        
+      violation_pattern:
+        condition: "Notification not using SinkType"
+        example_wrong: "NetworkNotification* _notification;"
+        
+      fix_template:
+        code: "Core::SinkType<NetworkNotification> _notification;"
+        
+      citation:
+        line_format: "[filename:LINE] Notification not using Core::SinkType"
+        rule: "10.5-plugin-implementation.md - Sink Pattern"
+        
+    - checkpoint_id: "implementation_5_9"
+      name: "Sink classes implement Unavailable()"
+      severity: "violation"
+      conditional: true
+      
+      extraction:
+        target: "Sink class implementation"
+        method: "Check for Unavailable() method"
+        code_block: "Sink class"
+        
+      bounded_query:
+        question: "IF using SinkType, does sink implement Unavailable()?"
+        expected_answer: "Yes (if applicable)"
+        
+      verification_logic:
+        - "Find SinkType classes"
+        - "If none: SKIP"
+        - "Search for 'void Unavailable()'"
+        - "If missing: VIOLATION"
+        
+      violation_pattern:
+        condition: "Sink missing Unavailable()"
+        
+      fix_template:
+        code: |
+          void Unavailable() override {
+              // Cleanup when resource unavailable
+          }
+          
+      citation:
+        line_format: "[filename:LINE] Sink missing Unavailable() method"
+        rule: "10.5-plugin-implementation.md - Sink Pattern"
+        
+    - checkpoint_id: "implementation_5_11"
+      name: "Use path tokens, not hardcoded paths"
+      severity: "violation"
+      
+      extraction:
+        target: "Initialize() and path assignments"
+        method: "Search for hardcoded paths"
+        code_block: "Path assignment statements"
+        
+      bounded_query:
+        question: "Are hardcoded absolute paths used?"
+        expected_answer: "No"
+        
+      verification_logic:
+        - "Search for '/tmp', '/var', 'C:\\' in strings"
+        - "Check if service->*Path() used"
+        - "If hardcoded path: VIOLATION"
+        
+      violation_pattern:
+        condition: "Hardcoded paths instead of tokens"
+        example_wrong: '_storagePath = "/tmp/plugin";'
+        
+      fix_template:
+        code: '_storagePath = service->PersistentPath() + "plugin/";'
+        
+      citation:
+        line_format: "[filename:LINE] Hardcoded path, use service->*Path()"
+        rule: "10.5-plugin-implementation.md - Resource Management"
 
 # ============================================================================
 # PHASE 6: CONFIGURATION CHECKPOINTS
@@ -799,6 +1218,52 @@ phase_7_checkpoints:
         rationale: "All Thunder plugins use ${CXX_STD} variable for consistent C++ standard management"
 
 # ============================================================================
+# PHASE 8: COM INTERFACE CHECKPOINTS
+# ============================================================================
+phase_8_checkpoints:
+  phase_id: "interfaces"
+  phase_name: "COM Interface Design"
+  rule_file: "10.3-plugin-class-registration.md"
+  
+  checkpoints:
+    - checkpoint_id: "com_8_1"
+      name: "COM interface methods return hresult"
+      severity: "violation"
+      
+      extraction:
+        target: "Interface definitions (struct I*)"
+        method: "Extract interface with method declarations"
+        code_block: "Complete interface definition"
+        
+      bounded_query:
+        question: "Do action methods return uint32_t (Core::hresult)?"
+        expected_answer: "Yes"
+        
+      verification_logic:
+        - "Find interfaces (struct I*)"
+        - "Extract virtual methods"
+        - "For action methods: check return type uint32_t"
+        - "Const getters can return other types"
+        - "If void/bool/etc: VIOLATION"
+        
+      violation_pattern:
+        condition: "Action methods not returning hresult"
+        example_wrong: |
+          struct IMyInterface {
+              virtual void Start() = 0;  // ❌
+          };
+          
+      fix_template:
+        code: |
+          struct IMyInterface {
+              virtual uint32_t Start() = 0;  // ✓
+          };
+          
+      citation:
+        line_format: "[filename:LINE] Interface method should return uint32_t (hresult)"
+        rule: "10.3-plugin-class-registration.md - COM Interface Design"
+
+# ============================================================================
 # CHECKPOINT EXECUTION ORDER
 # ============================================================================
 execution_order:
@@ -905,24 +1370,24 @@ summary_metrics:
       conditional: 0
       
     - phase_name: "Code Style"
-      total_checkpoints: 3
-      mandatory: 2
+      total_checkpoints: 6  # Added: 2_7, 2_8, 2_9
+      mandatory: 5
       conditional: 1
       
     - phase_name: "Class Registration"
-      total_checkpoints: 2
-      mandatory: 2
+      total_checkpoints: 3  # Added: 3_4
+      mandatory: 3
       conditional: 0
       
     - phase_name: "Lifecycle"
-      total_checkpoints: 3
-      mandatory: 1
-      conditional: 2
+      total_checkpoints: 9  # Added: 4_4, 4_5, 4_6, 4_8, oop_9_1
+      mandatory: 4
+      conditional: 5
       
     - phase_name: "Implementation"
-      total_checkpoints: 3
-      mandatory: 1
-      conditional: 2
+      total_checkpoints: 6  # Added: 5_4, 5_9, 5_11
+      mandatory: 3
+      conditional: 3
       
     - phase_name: "Configuration"
       total_checkpoints: 1
@@ -934,10 +1399,15 @@ summary_metrics:
       mandatory: 2
       conditional: 0
       
+    - phase_name: "COM Interfaces"
+      total_checkpoints: 1  # Added: com_8_1
+      mandatory: 1
+      conditional: 0
+      
   totals:
-    total_checkpoints: 17  # Focused set for key violations
-    mandatory: 11
-    conditional: 6
+    total_checkpoints: 29  # Unified: 17 core + 12 extended
+    mandatory: 21
+    conditional: 8
     
 # ============================================================================
 # VERIFICATION CONFIDENCE LEVELS
