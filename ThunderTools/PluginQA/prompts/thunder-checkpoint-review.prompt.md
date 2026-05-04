@@ -22,8 +22,8 @@ This is fundamentally different from open-ended whole-file review:
 Read: `ThunderTools/PluginQA/rules/thunder-plugin-rules-checkpoints.yaml`
 
 This file defines **18 core checkpoints** across 7 phases.  
-Extended checkpoints: `thunder-plugin-rules-checkpoints-extended.yaml` (8 additional checks)  
-**Total: 26 automated checkpoints** (reduced from 36 total rules for automation)
+Extended checkpoints: `thunder-plugin-rules-checkpoints-extended.yaml` (12 additional checks)  
+**Total: 30 automated checkpoints** (includes 4 new high-priority rules)
 
 Each checkpoint specifies:
 - **extraction**: What code block to extract
@@ -163,7 +163,7 @@ For each checkpoint:
   6. IF any missing → VIOLATION
 - Citation: `[Dictionary.cpp:130] Deinitialize missing observer Release/clear`
 
-### Phase 5: Implementation (3 checkpoints)
+### Phase 5: Implementation (6 checkpoints)
 
 **Checkpoint 5.1: Config Storage**
 - Extract: Plugin class private members
@@ -197,6 +197,73 @@ For each checkpoint:
   4. Search Deinitialize for matching `::Unregister` with same class
   5. IF not found → VIOLATION
 - Citation: `[Dictionary.cpp:128] JSON-RPC Register without matching Unregister`
+
+**Checkpoint 5.11: Path Tokens (NEW - High Priority)**
+- Extract: Initialize() and path-related assignments
+- Question: Are absolute paths hardcoded instead of using Thunder path services?
+- Logic:
+  1. Search for string literals with `/tmp`, `/var`, `C:\\`, etc.
+  2. Check if service->PersistentPath(), DataPath(), or VolatilePath() used
+  3. Check .conf.in for hardcoded paths vs %datapath% tokens
+  4. IF hardcoded path found → VIOLATION
+- Citation: `[Dictionary.cpp:115] Hardcoded path '/tmp/dict', use service->PersistentPath()`
+
+**Checkpoint 5.4: SinkType Pattern**
+- Extract: Notification/Observer class definitions + member declarations
+- Question: IF plugin has notification classes, THEN are they using Core::SinkType<>?
+- Logic:
+  1. Search for classes ending in 'Notification' or 'Observer'
+  2. IF NOT found → SKIP
+  3. Check member is `Core::SinkType<NotificationClass>`
+  4. IF raw pointer or `new`: VIOLATION
+- Citation: `[Dictionary.h:45] Notification not using Core::SinkType`
+
+**Checkpoint 5.9: Sink Unavailable Method**
+- Extract: Notification/Sink class implementation
+- Question: IF using SinkType, THEN does the sink class implement Unavailable()?
+- Logic:
+  1. Find SinkType classes
+  2. IF NOT found → SKIP
+  3. Search for `void Unavailable()` method
+  4. IF missing → VIOLATION
+- Citation: `[Dictionary.cpp:200] Sink class missing Unavailable() method`
+
+### Phase 5B: COM Interface Rules (2 checkpoints - NEW)
+
+**Checkpoint 8.1: COM Methods Return hresult**
+- Extract: Interface definitions (struct I*)
+- Question: Do action methods return uint32_t (Core::hresult)?
+- Logic:
+  1. Find interface structs (name starts with I)
+  2. Extract virtual method declarations
+  3. For non-getter methods: check return type
+  4. IF returns void/bool/string → VIOLATION
+  5. Const getters can return other types
+- Citation: `[IMyInterface.h:25] Interface method should return uint32_t (hresult)`
+
+**Checkpoint 8.2: No Delete on COM Objects (NEW - Critical)**
+- Extract: All .cpp files, search for `delete` statements
+- Question: Are there any `delete` statements on interface pointer types?
+- Logic:
+  1. Search for `delete` or `delete[]`
+  2. Check if variable name/type is interface (I*)
+  3. IF delete on interface pointer → VIOLATION
+  4. Should use ->Release() instead
+- Citation: `[Dictionary.cpp:145] delete on interface pointer, must use ->Release()`
+
+### Phase 5C: Out-of-Process (1 checkpoint - NEW, Conditional)
+
+**Checkpoint 9.1: OOP Connection Termination**
+- Extract: Deinitialize() method
+- Question: IF plugin is out-of-process, THEN does Deinitialize() call connection->Terminate()?
+- Logic:
+  1. Check if plugin uses OUTOFPROCESS config
+  2. IF in-process → SKIP
+  3. IF OOP: Search Deinitialize for service->RemoteConnection()
+  4. Check for connection->Terminate() call
+  5. Check for connection->Release() call
+  6. IF any missing → VIOLATION
+- Citation: `[Dictionary.cpp:135] OOP plugin missing connection->Terminate()`
 
 ### Phase 6: Configuration (1 checkpoint, conditional)
 
@@ -293,10 +360,20 @@ Phase 4 (Lifecycle): 1/3 PASS, 2 FAIL, 1 SKIP
 - ⊘ 4.2: IShell AddRef check skipped (not stored)
 - ❌ 4.3: Observer cleanup missing → [Dictionary.cpp:130]
 
-Phase 5 (Implementation): 0/3 PASS, 3 FAIL
+Phase 5 (Implementation): 4/6 PASS, 2 FAIL
 - ❌ 5.1: Config stored as member → [Dictionary.h:332]
 - ❌ 5.2: Callbacks under lock → [Dictionary.cpp:345]
 - ✅ 5.3: JSON-RPC Register/Unregister paired
+- ❌ 5.11: Hardcoded path → [Dictionary.cpp:115]
+- ✅ 5.4: SinkType pattern (if applicable)
+- ⊘ 5.9: Sink Unavailable (skipped - no sinks)
+
+Phase 5B (COM Interfaces): 2/2 PASS
+- ✅ 8.1: COM methods return hresult
+- ✅ 8.2: No delete on COM objects
+
+Phase 5C (Out-of-Process): SKIP
+- ⊘ 9.1: In-process plugin, OOP checks not applicable
 
 Phase 6 (Configuration): 1/1 PASS
 - ✅ 6.1: Startmode present
@@ -305,8 +382,8 @@ Phase 7 (CMake): 0/2 PASS, 2 FAIL
 - ❌ 7.1: cmake_minimum_required not first → [CMakeLists.txt:16]
 - ❌ 7.2: CXX_STANDARD not explicit → [CMakeLists.txt:46]
 
-**Total: 6 PASS, 10 FAIL, 1 SKIP**
-**Violations: 10 must-fix issues found**
+**Total: 15 PASS, 14 FAIL, 1 SKIP (30 automated checkpoints)**
+**Violations: 14 must-fix issues found**
 ```
 
 ## Key Advantages of Bounded Queries
@@ -330,11 +407,11 @@ Phase 7 (CMake): 0/2 PASS, 2 FAIL
 
 ---
 
-# PHASE 2: Additional Manual Review (10 More Rules)
+# PHASE 2: Additional Manual Review (7 More Rules)
 
-After completing the 26 automated checkpoints above, **10 additional rules** require manual review. These rules need human judgment or context understanding that's difficult to automate.
+After completing the 30 automated checkpoints above, **7 additional rules** require manual review. These rules need human judgment or context understanding that's difficult to automate.
 
-**Total Coverage: 26 automated + 10 manual = 36 complete rules**
+**Total Coverage: 30 automated + 7 manual = 37 complete rules**
 
 Present these to the user as follow-up review items with specific questions to check.
 
@@ -342,14 +419,14 @@ Present these to the user as follow-up review items with specific questions to c
 
 ### 📋 Additional Rules to Review
 
-**Output this checklist after the 26-checkpoint summary:**
+**Output this checklist after the 30-checkpoint summary:**
 
 ```markdown
 ---
 
-## Additional Manual Review Required (10 Rules)
+## Additional Manual Review Required (7 Rules)
 
-The automated checkpoints covered 26 rules. The following 10 rules require manual inspection:
+The automated checkpoints covered 30 rules. The following 7 rules require manual inspection:
 
 ### 1. ✋ Module.h Header Guards (module_1_4)
 **Question:** Does Module.h use `#pragma once` instead of legacy header guards?

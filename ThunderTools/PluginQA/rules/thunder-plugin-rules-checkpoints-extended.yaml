@@ -508,26 +508,316 @@ extended_summary:
 # COMBINED CHECKPOINT COVERAGE
 # ============================================================================
 
+  # ==========================================================================
+  # Checkpoint 26: No Delete on COM Objects
+  # ==========================================================================
+  - checkpoint_id: "style_2_9"
+    name: "No delete on COM interface pointers"
+    severity: "violation"
+    phase: "code_style"
+    priority: "critical"
+    
+    extraction:
+      target: "Entire plugin .cpp files"
+      method: "Search for 'delete' statements with interface pointer variables"
+      code_block: "Block containing delete statement and 10 lines context"
+      
+    bounded_query:
+      question: "Are there any 'delete' statements used on variables with interface pointer types (I*)?"
+      expected_answer: "No"
+      
+    verification_logic:
+      - "Search for 'delete' or 'delete[]' in all .cpp files"
+      - "For each match, check if variable name starts with 'I' or has interface type"
+      - "Check if variable declared with type like 'IPlugin*', 'IShell*', 'IMyInterface*'"
+      - "If delete used on interface pointer: VIOLATION"
+      - "If ->Release() used instead: PASS"
+      - "Ignore 'delete' on non-interface types (Config*, impl classes)"
+      
+    violation_pattern:
+      condition: "Using delete/delete[] on COM interface pointers"
+      example_wrong: |
+        IMyInterface* interface = ...;
+        // ... use interface
+        
+        // ❌ Wrong:
+        delete interface;
+        
+    fix_template:
+      action: "Use ->Release() for COM objects"
+      code: |
+        IMyInterface* interface = ...;
+        // ... use interface
+        
+        // ✓ Correct:
+        if (interface != nullptr) {
+            interface->Release();
+            interface = nullptr;
+        }
+        
+    rationale: |
+      COM objects use reference counting:
+      - AddRef() increments reference count
+      - Release() decrements and deletes when count reaches 0
+      - Using 'delete' bypasses reference counting
+      - Can cause double-free, memory corruption, crashes
+      - Framework manages COM object lifetime automatically
+      
+    citation:
+      line_format: "[filename:LINE] delete used on interface pointer, must use ->Release()"
+      rule: "10.5-plugin-implementation.md - COM Interface Management"
+
+  # ==========================================================================
+  # Checkpoint 27: Path Tokens vs Hardcoded Paths
+  # ==========================================================================
+  - checkpoint_id: "implementation_5_11"
+    name: "Use path tokens, not hardcoded paths"
+    severity: "violation"
+    phase: "implementation"
+    priority: "critical"
+    
+    extraction:
+      target: "Initialize() method and path-related assignments"
+      method: "Search for string literals with path separators '/' or '\\'"
+      code_block: "Assignment statements with path strings"
+      
+    bounded_query:
+      question: "Are absolute or hardcoded paths used instead of Thunder path tokens?"
+      expected_answer: "No"
+      
+    verification_logic:
+      - "Search for string literals containing '/tmp', '/var', 'C:\\', '/usr', '/opt'"
+      - "Search for assignments like '_path = \"/some/path\"'"
+      - "Check if service->PersistentPath(), DataPath(), or VolatilePath() used"
+      - "Check .conf.in for hardcoded paths vs tokens like %datapath%"
+      - "If hardcoded absolute path found: VIOLATION"
+      - "If service->*Path() used: PASS"
+      - "If path tokens used in config: PASS"
+      
+    violation_pattern:
+      condition: "Hardcoded absolute paths instead of Thunder path tokens"
+      example_wrong: |
+        const string Initialize(IShell* service) {
+            // ❌ Wrong - hardcoded paths:
+            _storagePath = "/tmp/plugin";
+            _configFile = "C:\\ProgramData\\config.json";
+            
+            return string();
+        }
+        
+        # In .conf.in:
+        # ❌ Wrong:
+        "datapath":"/tmp/data"
+        
+    fix_template:
+      action: "Use Thunder path service methods and tokens"
+      code: |
+        const string Initialize(IShell* service) {
+            // ✓ Correct - use service methods:
+            _storagePath = service->PersistentPath() + "plugin/";
+            _dataPath = service->DataPath();
+            _volatilePath = service->VolatilePath();
+            
+            return string();
+        }
+        
+        # In .conf.in:
+        # ✓ Correct - use path tokens:
+        "datapath":"%datapath%",
+        "persistentpath":"%persistentpath%",
+        "volatilepath":"%volatilepath%"
+        
+    rationale: |
+      Hardcoded paths break portability:
+      - Different platforms use different paths
+      - System paths may not exist or have permissions
+      - Thunder provides abstraction via IShell methods
+      - Config tokens expand at runtime to system paths
+      
+      Available path methods:
+      - service->PersistentPath() - Non-volatile storage
+      - service->DataPath() - Runtime data
+      - service->VolatilePath() - Temporary/cache data
+      
+    citation:
+      line_format: "[filename:LINE] Hardcoded path, use service->*Path() or %token%"
+      rule: "10.5-plugin-implementation.md - Resource Management"
+
+  # ==========================================================================
+  # Checkpoint 28: COM Interface Methods Return hresult
+  # ==========================================================================
+  - checkpoint_id: "com_8_1"
+    name: "COM interface methods return hresult"
+    severity: "violation"
+    phase: "interfaces"
+    priority: "high"
+    
+    extraction:
+      target: "Interface definitions in .h files (struct I*)"
+      method: "Extract interface struct with all method declarations"
+      code_block: "Complete interface definition"
+      
+    bounded_query:
+      question: "Do all non-getter interface methods return uint32_t (Core::hresult)?"
+      expected_answer: "Yes"
+      
+    verification_logic:
+      - "Search for 'struct' or 'class' with name starting 'I' and INTERFACE_ENTRY"
+      - "Extract all virtual method declarations"
+      - "For each method:"
+      - "  - If property getter (const method): can return other types"
+      - "  - If action method: should return uint32_t"
+      - "  - If returns void, bool, string, etc.: VIOLATION"
+      - "Check for proper error code constants usage"
+      
+    violation_pattern:
+      condition: "Interface action methods not returning Core::hresult"
+      example_wrong: |
+        struct IMyInterface : virtual public Core::IUnknown {
+            // ❌ Wrong - action methods not returning error codes:
+            virtual void Start() = 0;
+            virtual bool Configure(const string& config) = 0;
+            virtual string GetStatus() = 0;  // OK for getter
+        };
+        
+    fix_template:
+      action: "Use uint32_t (hresult) for action methods"
+      code: |
+        struct IMyInterface : virtual public Core::IUnknown {
+            // ✓ Correct - action methods return error codes:
+            virtual uint32_t Start() = 0;
+            virtual uint32_t Configure(const string& config) = 0;
+            
+            // ✓ Getters can return data directly:
+            virtual string GetStatus() const = 0;
+        };
+        
+        // In implementation:
+        uint32_t Start() override {
+            if (!_initialized) {
+                return Core::ERROR_ILLEGAL_STATE;
+            }
+            // ... do work
+            return Core::ERROR_NONE;
+        }
+        
+    rationale: |
+      COM interface design principles:
+      - Action methods must signal success/failure
+      - hresult (uint32_t) is Thunder error code type
+      - Enables proper error propagation across process boundaries
+      - Const getter methods can return data types directly
+      - Exceptions cannot cross COM boundaries
+      
+      Common error codes:
+      - ERROR_NONE (0) - Success
+      - ERROR_GENERAL - Generic failure
+      - ERROR_ILLEGAL_STATE - Invalid state
+      - ERROR_UNAVAILABLE - Resource not available
+      - ERROR_BAD_REQUEST - Invalid parameters
+      
+    citation:
+      line_format: "[filename:LINE] Interface method should return uint32_t (hresult)"
+      rule: "10.3-plugin-class-registration.md - COM Interface Design"
+
+  # ==========================================================================
+  # Checkpoint 29: OOP Connection Termination
+  # ==========================================================================
+  - checkpoint_id: "oop_9_1"
+    name: "OOP plugin calls connection->Terminate()"
+    severity: "violation"
+    phase: "lifecycle"
+    priority: "high"
+    conditional: "Only for out-of-process plugins"
+    
+    extraction:
+      target: "Deinitialize() method in OOP plugins"
+      method: "Check for RemoteConnection and Terminate calls"
+      code_block: "Complete Deinitialize method"
+      
+    bounded_query:
+      question: "IF plugin is out-of-process, THEN does Deinitialize() call connection->Terminate()?"
+      expected_answer: "Yes (if OOP)"
+      
+    verification_logic:
+      - "Check if plugin uses PluginHost::IPlugin::Config::OUTOFPROCESS"
+      - "Check if RPC::IRemoteConnection* used in code"
+      - "If in-process plugin: SKIP"
+      - "If OOP plugin:"
+      - "  - Check Deinitialize for service->RemoteConnection() call"
+      - "  - Check for connection->Terminate() call"
+      - "  - Check for connection->Release() call"
+      - "  - If missing: VIOLATION"
+      
+    violation_pattern:
+      condition: "OOP plugin not terminating connection in Deinitialize"
+      example_wrong: |
+        // Out-of-process plugin:
+        void Deinitialize(IShell* service) override {
+            ASSERT(_service == service);
+            
+            // ... cleanup
+            
+            // ❌ Wrong - missing connection termination
+            
+            _service->Release();
+            _service = nullptr;
+        }
+        
+    fix_template:
+      action: "Terminate RPC connection in Deinitialize"
+      code: |
+        void Deinitialize(IShell* service) override {
+            ASSERT(_service == service);
+            
+            // ✓ Correct - terminate OOP connection:
+            if (_connectionId != 0) {
+                RPC::IRemoteConnection* connection = 
+                    _service->RemoteConnection(_connectionId);
+                if (connection != nullptr) {
+                    connection->Terminate();
+                    connection->Release();
+                }
+            }
+            
+            _service->Release();
+            _service = nullptr;
+        }
+        
+    rationale: |
+      Out-of-process plugins run in separate process:
+      - Framework manages RPC connection
+      - connection->Terminate() signals graceful shutdown
+      - Without Terminate(), process may not exit cleanly
+      - Can cause zombie processes or resource leaks
+      - Must be called before releasing service
+      
+    citation:
+      line_format: "[filename:LINE] OOP plugin missing connection->Terminate() in Deinitialize"
+      rule: "10.4-plugin-lifecycle.md - Out-of-Process Lifecycle"
+
 combined_coverage:
   core_checkpoints: 17
-  extended_checkpoints: 8
-  total_checkpoints: 25
+  extended_checkpoints: 12
+  total_checkpoints: 29
   
   phase_totals:
     module_structure: 3
-    code_style: 5        # Added: String, Exceptions
+    code_style: 6        # Added: String, Exceptions, Delete on COM
     class_registration: 3 # Added: Metadata
-    lifecycle: 7         # Added: Information, Constructor, Destructor, Return
-    implementation: 4    # Added: SinkType
+    lifecycle: 8         # Added: Information, Constructor, Destructor, Return, OOP Terminate
+    implementation: 5    # Added: SinkType, Path Tokens
+    interfaces: 1        # Added: COM hresult returns
     configuration: 1
     cmake: 2
     
   coverage_summary: |
-    Complete Thunder plugin validation with 25 bounded checkpoints:
+    Complete Thunder plugin validation with 29 bounded checkpoints:
     - Core plugin structure and registration
-    - Lifecycle method requirements
+    - Lifecycle method requirements (IP and OOP)
     - Memory management patterns
+    - COM interface design rules
     - Threading and callbacks
-    - Error handling
+    - Error handling and resource management
     - Build system
     - Plus extended patterns for production-ready plugins
