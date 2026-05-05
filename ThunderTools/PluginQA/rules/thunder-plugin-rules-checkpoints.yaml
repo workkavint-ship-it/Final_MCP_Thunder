@@ -721,7 +721,7 @@ phase_4_checkpoints:
         line_format: "[filename] Missing Information() implementation"
         rule: "10.4-plugin-lifecycle.md - Mandatory Methods"
         
-    - checkpoint_id: "lifecycle_4_5"
+    - checkpoint_id: "lifecycle_4_9"
       name: "Constructor only initializes members"
       severity: "violation"
       
@@ -760,7 +760,7 @@ phase_4_checkpoints:
         line_format: "[filename:LINE] Constructor contains logic"
         rule: "10.4-plugin-lifecycle.md - Constructor Rules"
         
-    - checkpoint_id: "lifecycle_4_6"
+    - checkpoint_id: "lifecycle_4_10"
       name: "Destructor is default or empty"
       severity: "violation"
       
@@ -793,7 +793,7 @@ phase_4_checkpoints:
         line_format: "[filename:LINE] Destructor not default/empty"
         rule: "10.4-plugin-lifecycle.md - Destructor Rules"
         
-    - checkpoint_id: "lifecycle_4_8"
+    - checkpoint_id: "lifecycle_4_11"
       name: "Initialize returns empty string on success"
       severity: "suggestion"
       
